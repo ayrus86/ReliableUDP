@@ -11,7 +11,7 @@ all: client server
 
 
 client: udpclient.o
-	${CC} ${FLAGS} -o client udpclient.o ${LIBS}
+	${CC} ${FLAGS} -o client udpclient.o get_ifi_info_plus.o ${LIBS}
 udpclient.o: udpclient.c
 	${CC} ${CFLAGS} -c udpclient.c
 

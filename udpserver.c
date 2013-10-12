@@ -102,18 +102,31 @@ int main(int argc, char* argv)
 	
 	FD_ZERO(&rset);
 	maxfdp++;
-
+	
 	for ( ; ; )
         {
 		for (i = 0; i < numInterfaces; i++)
         		FD_SET(interfaces[i].sockfd, &rset);
 		
+		printf("waiting for connections...\n");	
 		Select(maxfdp, &rset, NULL, NULL, NULL);
 		
 		for (i = 0; i < numInterfaces; i++)
 		{
 			if (FD_ISSET(interfaces[i].sockfd, &rset))
 			{
+				char    readLine[MAXLINE];
+				char	clientIp[INET_ADDRSTRLEN];
+				struct sockaddr_in sockAddr;
+				bzero(&sockAddr, sizeof(sockAddr));
+                		socklen_t len = sizeof(sockAddr);
+				memset(readLine, 0, MAXLINE);
+				if(recvfrom(interfaces[i].sockfd, readLine, MAXLINE, 0, (struct sockaddr *)&sockAddr, &len)!=0)
+				{
+					printf("To:%s ",inet_ntop(AF_INET, &(((struct sockaddr_in*)interfaces[i].bind_ipaddr)->sin_addr) , clientIp, sizeof(clientIp)));
+					printf("From:%s ",inet_ntop(AF_INET, &(((struct sockaddr_in*)&sockAddr)->sin_addr) , clientIp, sizeof(clientIp)));
+					printf("Data:%s\n", readLine);
+				}
 			}		
  		}
 	}
