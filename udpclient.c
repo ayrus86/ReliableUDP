@@ -49,6 +49,94 @@ void getInterfaces(struct bind_info** addrInterfaces, int* numInterfaces)
         *addrInterfaces = interfaces;
 }
 
+
+void transferFile(struct bind_info* interfaces, char* serverIp, int port)
+{
+	struct sockaddr_in sockAddr;
+        struct sockaddr_in *clientAddr;
+        int sockfd, n;
+	char buf[MAXLINE];
+        
+        if((sockfd = socket(AF_INET, SOCK_DGRAM, 0)) == -1)
+                err_quit("error socket() errno:%d\n", errno);
+        
+        clientAddr = (struct sockaddr_in *) interfaces[0].bind_ipaddr;   
+        clientAddr->sin_family = AF_INET;
+        clientAddr->sin_port = htons(0);
+                
+        if((n = bind(sockfd, (SA *) clientAddr, sizeof(*clientAddr))) == -1)
+                err_quit("error bind() errno:%d\n", errno);
+        
+	bzero(&sockAddr, sizeof(sockAddr));
+        socklen_t len = sizeof(sockAddr);
+        memset(buf, 0, sizeof(buf));
+        if (getsockname(sockfd, (struct sockaddr *)&sockAddr, &len) == -1)
+        	err_quit("error getsockname() errno:%d\n", errno);
+        printf("Client IP:%s Port:%d\n", inet_ntop(AF_INET, &sockAddr.sin_addr, buf, sizeof(buf)),ntohs(sockAddr.sin_port));
+                                
+        bzero(&sockAddr, sizeof(sockAddr));
+        sockAddr.sin_family = AF_INET;
+        sockAddr.sin_port = htons(port);
+
+	if((n=inet_pton(AF_INET, serverIp, &sockAddr.sin_addr))!=1)   
+                 err_quit("error inet_pton() n:%d errno:%d\n", n, errno);
+        
+        if((n = connect(sockfd,(SA *)&sockAddr, sizeof(sockAddr))) == -1)
+                err_quit("error connect() errno:%d\n", errno);
+        
+	bzero(&sockAddr, sizeof(sockAddr));
+        len = sizeof(sockAddr);  
+        memset(buf, 0, sizeof(buf));   
+        if (getpeername(sockfd, (struct sockaddr *)&sockAddr, &len) == -1)
+        	err_quit("error getpeername() errno:%d\n", errno);
+        
+	printf("Server IP:%s Port:%d\n", inet_ntop(AF_INET, &sockAddr.sin_addr, buf, sizeof(buf)),ntohs(sockAddr.sin_port));
+	memset(buf, 0, sizeof(buf));
+	sprintf(buf,"test.txt");
+        if(write(sockfd, buf, strlen(buf))<0)
+        	err_quit("error write() errno:%d\n", errno);
+                	
+	fd_set  rset;
+	FD_ZERO(&rset);
+	for ( ; ; )
+        {
+		FD_SET(sockfd, &rset);
+		printf("waiting for the reconnect port from server...\n");
+		if ( (n = select(sockfd+1, &rset, NULL, NULL, NULL)) < 0)
+		{
+             		if (errno == EINTR)
+                                continue;
+                        else
+                               	err_quit("error select() errno:%d\n", errno);
+                }	
+		else
+                {
+			if (FD_ISSET(sockfd, &rset))
+                        {
+				memset(buf, 0, sizeof(buf));
+				bzero(&sockAddr, sizeof(sockAddr));
+				if(recvfrom(sockfd, buf, MAXLINE, 0, (struct sockaddr *)&sockAddr, &len)!=0)
+        			{
+					printf("read from listening port:%s\n", buf);
+					sockAddr.sin_port = htons(atoi(buf));
+					printf("Reconnecting server at port:%d\n", atoi(buf));
+					if((n = connect(sockfd,(SA *)&sockAddr, sizeof(sockAddr))) == -1)
+                				err_quit("error connect() errno:%d\n", errno);
+					while(1)
+					{
+						printf("enter string to send:");
+						gets(buf);
+						if(strcmp(buf, "exit") == 0)
+							exit(0);
+				                if(write(sockfd, buf, strlen(buf))<0)
+                                			err_quit("error write() errno:%d\n", errno);
+					}
+				}
+			}
+		}
+	}	
+}
+
 int main(int argc, char* argv)
 {
 	int i, n, numInterfaces;
@@ -73,52 +161,5 @@ int main(int argc, char* argv)
                 printf("Subnet addr:%s\n\n", inet_ntop(AF_INET, interfaces[i].bind_subaddr, buff, sizeof(buff)));
 	}
 
-	struct sockaddr_in sockAddr;
-        struct sockaddr_in *clientAddr; 
-	int sockfd;
-
-	if((sockfd = socket(AF_INET, SOCK_DGRAM, 0)) == -1)
-        	err_quit("error socket() errno:%d\n", errno);
-
-	clientAddr = (struct sockaddr_in *) interfaces[0].bind_ipaddr;
-	clientAddr->sin_family = AF_INET;
-        clientAddr->sin_port = htons(0);
-	
-	if((n = bind(sockfd, (SA *) clientAddr, sizeof(*clientAddr))) == -1)
-        	err_quit("error bind() errno:%d\n", errno);
-	else
-	{
-		bzero(&sockAddr, sizeof(sockAddr));
-		socklen_t len = sizeof(sockAddr);
-		memset(buff, 0, sizeof(buff));
-		if (getsockname(sockfd, (struct sockaddr *)&sockAddr, &len) == -1)
-    			err_quit("error getsockname() errno:%d\n", errno);
-		else
-    			printf("Client IP:%s Port:%d\n", inet_ntop(AF_INET, &sockAddr.sin_addr, buff, sizeof(buff)),ntohs(sockAddr.sin_port));
-	}
-
-	bzero(&sockAddr, sizeof(sockAddr));
-	sockAddr.sin_family = AF_INET;
-	sockAddr.sin_port = htons(port);
-	
-	if((n=inet_pton(AF_INET, serverIp, &sockAddr.sin_addr))!=1)
-		 err_quit("error inet_pton() n:%d errno:%d\n", n, errno);
-
-	if((n = connect(sockfd,(SA *)&sockAddr, sizeof(sockAddr))) == -1)
-        	err_quit("error connect() errno:%d\n", errno);
-	else
-	{
-		bzero(&sockAddr, sizeof(sockAddr));
-                socklen_t len = sizeof(sockAddr);
-                memset(buff, 0, sizeof(buff));
-                if (getpeername(sockfd, (struct sockaddr *)&sockAddr, &len) == -1)
-                        err_quit("error getpeername() errno:%d\n", errno);
-                else
-		{
-                        printf("Server IP:%s Port:%d\n", inet_ntop(AF_INET, &sockAddr.sin_addr, buff, sizeof(buff)),ntohs(sockAddr.sin_port));
-			//if(sendto(sockfd, "test.txt", 9, 0, (struct sockaddr *)&sockAddr, len)==-1)
-			if(write(sockfd, "test.txt", 9)<0)
-				err_quit("error sendto() errno:%d\n", errno);
-		}
-	}	
+	transferFile(interfaces, serverIp, port);
 }

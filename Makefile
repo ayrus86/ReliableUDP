@@ -9,11 +9,12 @@ CFLAGS = ${FLAGS} -I/home/courses/cse533/Stevens/unpv13e_solaris2.10/lib
 
 all: client server 
 
-
-client: udpclient.o
+client: udpclient.o get_ifi_info_plus.o
 	${CC} ${FLAGS} -o client udpclient.o get_ifi_info_plus.o ${LIBS}
 udpclient.o: udpclient.c
 	${CC} ${CFLAGS} -c udpclient.c
+get_ifi_info_plus.o: get_ifi_info_plus.c
+	${CC} ${CFLAGS} -c get_ifi_info_plus.c
 
 
 server: udpserver.o get_ifi_info_plus.o readline.o
@@ -26,7 +27,5 @@ udpserver.o: udpserver.c
 readline.o: /home/courses/cse533/Stevens/unpv13e_solaris2.10/threads/readline.c
 	${CC} ${CFLAGS} -c /home/courses/cse533/Stevens/unpv13e_solaris2.10/threads/readline.c
 
-get_ifi_info_plus.o: get_ifi_info_plus.c
-	${CC} ${CFLAGS} -c get_ifi_info_plus.c
 clean:
 	rm client udpclient.o server udpserver.o get_ifi_info_plus.o readline.o
