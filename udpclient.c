@@ -102,12 +102,11 @@ int requestRebind(struct connection* conn)
                         {
 				struct packet_t* recvPacket = (struct packet_t*)malloc(sizeof(struct packet_t));
 				struct sockaddr_in sockAddr;
-				printf("client calling udp_recv.\n");
                                 if(udp_recv(conn->sockfd, recvPacket, (SA*) &sockAddr) == 1)
                                 {
                                         if(recvPacket->msgType == MSG_ACK && recvPacket->seq == 1001)
 					{
-						printf("Received new binding port. Rebinding to port.\n");
+						printf("Received new binding port. Rebinding to port:%s.\n", recvPacket->msg);
         					sockAddr.sin_port = htons(atoi(recvPacket->msg));
         					if(connect(conn->sockfd,(SA *)&sockAddr, sizeof(sockAddr)) == -1)
         					{       
@@ -115,7 +114,7 @@ int requestRebind(struct connection* conn)
                 					return -1;
         					}
 						free(recvPacket);
-        					printf("Port rebound successful.\n");
+        					printf("Port rebound successful. Sending ACK to finish 3-Way handshake.\n");
 						goto sendack;						
 					}  
                                 }
@@ -128,14 +127,72 @@ int requestRebind(struct connection* conn)
 
 
 sendack:
-	bzero(packet, sizeof(struct packet_t));
-                                                        
-        packet->seq = 1002;
-        packet->msgType = MSG_ACK;
 	udp_send(conn->sockfd, packet, NULL);
 	free(packet);
+	return 1002;
 }
 
+int recvFile(struct connection* conn, int n)
+{
+	struct packet_t* packet = (struct packet_t*) malloc(sizeof(struct packet_t));
+	bzero(packet, sizeof(struct packet_t));
+        packet->seq = n;
+        packet->msgType = MSG_ACK;
+
+	struct timeval timeout;
+        timeout.tv_sec = 5;
+        timeout.tv_usec = 0;
+	
+	fd_set  rset;
+        FD_ZERO(&rset);
+	for(;;)
+        {
+                FD_SET(conn->sockfd, &rset);
+                if (select(conn->sockfd+1, &rset, NULL, NULL, &timeout) < 0)
+                {
+			if (errno == EINTR)
+                        	continue;
+                        else
+                        {
+                                printf("error recvFile:select() errno:%d\n", errno);
+                                return -1;
+                        }
+                }
+                else
+                {
+			if (FD_ISSET(conn->sockfd, &rset))
+                        {
+                                struct packet_t* recvPacket = (struct packet_t*)malloc(sizeof(struct packet_t));
+                                struct sockaddr_in sockAddr;
+                                if(udp_recv(conn->sockfd, recvPacket, (SA*) &sockAddr) == 1)
+                                {
+                                        if(recvPacket->msgType == MSG_DATA && recvPacket->seq == n)
+                                        {
+						printf("read file:%s\n", recvPacket->msg);
+						packet->seq = ++n;
+						free(recvPacket);
+						printf("sending ack n:%d\n", n);
+						udp_send(conn->sockfd, packet, NULL);
+					}
+					else if(recvPacket->msgType == MSG_EOF)
+					{
+						packet->seq = ++n;
+ 						udp_send(conn->sockfd, packet, NULL);
+						break;
+					}
+				}
+			}
+			else
+			{
+				printf("recvFile: timeout. sending ack n:%d\n", n);
+				 udp_send(conn->sockfd, packet, NULL);
+			}
+		}
+	}
+	free(packet);	
+	printf("finished reading file.\n");
+	return 1;
+}
 int createNewConnection(struct connection* conn)
 {
 	struct sockaddr_in sockAddr;
@@ -241,6 +298,8 @@ int main(int argc, char* argv)
 		err_quit("Unable to connect to server.\n");
 
 	printf("Requesting rebound port.\n");	
-	if(requestRebind(conn) == -1)
+	if((n=requestRebind(conn)) == -1)
 		err_quit("Unable to request rebind port from server.\n");
+	
+	recvFile(conn, n);
 }

@@ -3,8 +3,8 @@
 #define MSG_SYN 1
 #define MSG_SYNACK 2
 #define MSG_ACK 3
-#define MSG_FILE 4
-#define MSG_DATE 5
+#define MSG_EOF 4
+#define MSG_DATA 5
 
 struct packet_t{
         int msgType;

@@ -156,6 +156,78 @@ int createNewConnection(struct connection* conn)
 	return 1;	
 }
 
+int sendFile(struct connection* conn, int n)
+{
+	struct packet_t* packet = (struct packet_t*) malloc(sizeof(struct packet_t));
+        bzero(packet, sizeof(struct packet_t));
+	packet->seq = n;
+        packet->msgType = MSG_DATA;
+
+	struct timeval timeout;
+        timeout.tv_sec = 5;
+        timeout.tv_usec = 0;
+
+	FILE *fp = fopen(conn->fileName, "r");	
+	fd_set  rset;
+        FD_ZERO(&rset);
+
+	if(!feof(fp))
+        {
+        	bzero(packet->msg, sizeof(packet->msg));
+                fgets(packet->msg,512,fp);
+        }
+
+	int eof = 0;
+
+	for(;;)
+	{
+		printf("sending file n:%d msg:%s\n", n, packet->msg);
+		udp_send(conn->sockfd, packet, NULL);
+		FD_SET(conn->sockfd, &rset);
+                if (select(conn->sockfd+1, &rset, NULL, NULL, &timeout) < 0)
+                {
+                        if (errno == EINTR)
+                                continue;
+                        else
+                        {
+                                printf("error sendFile:select() errno:%d\n", errno);
+                                return -1;
+                        }
+                }
+		else
+                {
+                        if (FD_ISSET(conn->sockfd, &rset))
+                        {
+				struct packet_t* recvPacket = (struct packet_t*)malloc(sizeof(struct packet_t));
+                                struct sockaddr_in sockAddr;
+                                if(udp_recv(conn->sockfd, recvPacket, (SA*) &sockAddr) == 1)
+                                {
+					if(recvPacket->msgType == MSG_ACK && recvPacket->seq == n+1)
+                                        {
+						if(!feof(fp))
+        					{        
+                					bzero(packet->msg, sizeof(packet->msg));
+                					fgets(packet->msg,512,fp);
+							packet->seq = ++n;
+        					}        
+        					else if(eof == 0)
+						{
+							bzero(packet->msg, sizeof(packet->msg));
+							packet->msgType = MSG_EOF;
+							packet->seq = ++n;
+							eof = 1;
+						}
+						else
+							break;
+					}
+				} 	
+			}
+		}
+		
+	}
+	fclose(fp);
+	printf("successfully finished sending file.\n");
+}
 
 int sendRebindPort(int sockfd, struct sockaddr* sockAddr, int seq, struct connection* conn)
 {
@@ -197,9 +269,10 @@ int sendRebindPort(int sockfd, struct sockaddr* sockAddr, int seq, struct connec
 				{
 					if(recvPacket->msgType == MSG_ACK)
 					{
-						printf("Got ACK on rebound port. Threeway Handshake succesful.\n");
+						printf("Got ACK on rebound port. 3-way Handshake successful.\n");
+						int n = recvPacket->seq;
 						free(recvPacket);
-						return 1;
+						return n;
 					}
 				}
 			}
@@ -286,7 +359,6 @@ int main(int argc, char* argv)
                 }  
 		else
 		{
-			printf("out of select. looping through interfaces.\n");
 			for (i = 0; i < numInterfaces; i++)
 			{
 				if (FD_ISSET(interfaces[i].sockfd, &rset))
@@ -295,7 +367,6 @@ int main(int argc, char* argv)
         				bzero(recvPacket, sizeof(struct packet_t));
 					struct sockaddr_in sockAddr;
 					socklen_t len = sizeof(sockAddr);		
-					printf("calling udp_recv.\n");
 					if(udp_recv(interfaces[i].sockfd, recvPacket, (SA*) &sockAddr) == 1)
 					{
 						printf("read fileName:%s msgType:%d seq:%d\n", recvPacket->msg, recvPacket->msgType, recvPacket->seq);
@@ -328,11 +399,12 @@ int main(int argc, char* argv)
 								
 								//if we reach here we have both listenfd and connfd setup for client.
 								//now send the serverport to client and let it rebind.
-								if(sendRebindPort(interfaces[i].sockfd, (SA*)&sockAddr, recvPacket->seq, conn) == -1)
+								if((n=sendRebindPort(interfaces[i].sockfd, (SA*)&sockAddr, recvPacket->seq, conn)) == -1)
 									err_quit("error sendRebindPort().\n");
 		
 								close(interfaces[i].sockfd);
-								//sendfile(conn->sockfd);
+								if(sendFile(conn, n) == -1)
+									err_quit("error sendFile().\n");
 								exit(0);
 							}
 						}
