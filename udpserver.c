@@ -1,7 +1,10 @@
 #include <stdio.h>
 #include "unpifiplus.h"
-
+#include "udp.h"
+#include "unprtt.h"
 #define DEBUG 1
+
+static struct msghdr msgsend, msgrecv;
 
 void signalHandler(int signal)
 {                               
@@ -55,85 +58,116 @@ void getInterfaces(struct bind_info** addrInterfaces, int* numInterfaces)
 	*addrInterfaces = interfaces;  
 }
 
-void handleNewConnection(int index, struct bind_info* interfaces, int numInterfaces)
+struct connection* is_dup_connection(struct sockaddr_in* clientAddr, char* serverIp, char* fileName)
 {
-      	int i;
-	for(i=0;i<numInterfaces;i++)
-		if(i!=index)
-			close(interfaces[i].sockfd);
-	char    buf[MAXLINE];
-	char    fileName[MAXLINE];
-	char    clientIp[INET_ADDRSTRLEN];
-        struct sockaddr_in sockAddr;
-        socklen_t len = sizeof(sockAddr);
-	int clientPort, serverPort;
+	struct connection* cur = connections;
+	struct connection* prev = connections;
+	char clientIp[INET_ADDRSTRLEN];
+	int clientPort;
 
-	bzero(&sockAddr, sizeof(sockAddr));
-	if(recvfrom(interfaces[index].sockfd, fileName, MAXLINE, 0, (struct sockaddr *)&sockAddr, &len)!=0)
-        {
-        	memset(buf, 0, MAXLINE);
-        	memset(clientIp, 0, INET_ADDRSTRLEN);
+	inet_ntop(AF_INET, &clientAddr->sin_addr, clientIp, sizeof(clientIp));
+	clientPort = ntohs(clientAddr->sin_port);
 
-		if(inet_ntop(AF_INET, &(((struct sockaddr_in*)&sockAddr)->sin_addr), clientIp, sizeof(clientIp)) == NULL)
-                         err_quit("error inet_ntop() errno:%d\n", errno);
-                else
-		{
-			clientPort = ntohs(sockAddr.sin_port);
-                        printf("From:%s ", clientIp);
-                        printf("Port:%d ", clientPort);
-                	printf("Data:%s\n", fileName);
-		}
-        }
-	else
-		err_quit("error recvfrom() errno:%d\n", errno);
-
-	int connectionfd,n;
-	const int on = 1;
-	struct sockaddr_in *serverAddr;
-	
-	if((connectionfd = socket(AF_INET, SOCK_DGRAM, 0)) == -1)
-                err_quit("error socket() errno:%d\n", errno);	  
-	
-	if((n = setsockopt(connectionfd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on))) == -1)
-                err_quit("error setsockopt() errno:%d\n", errno);
-
-	serverAddr = (struct sockaddr_in *) interfaces[index].bind_ipaddr;
-        serverAddr->sin_family = AF_INET;
-        serverAddr->sin_port = htons(0);
-        
-	if((n = bind(connectionfd, (SA *) serverAddr, sizeof(*serverAddr))) == -1)
-                err_quit("error bind() errno:%d\n", errno);
+	while(cur!=NULL)
+	{
+		if((strcmp(clientIp, cur->clientIp)==0) && (clientPort == cur->clientPort) && (strcmp(serverIp, cur->serverIp)==0) && (strcmp(fileName, cur->fileName)==0))
+			return cur;
 		
+		prev = cur;
+		cur = cur->next;
+	}
+	
+	struct connection* newConn = (struct connection*)malloc(sizeof(struct connection));
+	strcpy(newConn->clientIp, clientIp);
+	strcpy(newConn->serverIp, serverIp);
+	strcpy(newConn->fileName, fileName);	
+	newConn->clientPort = clientPort;
+	newConn->pid = -1;
+	
+	if(connections == NULL)
+		connections = newConn;
+	else
+	{
+		prev->next = newConn;
+		newConn->prev = prev;
+		newConn->next = NULL;
+	}
+
+	return newConn;
+}
+
+int createNewConnection(struct connection* conn)
+{
+	char    buf[MAXLINE];
+        struct sockaddr_in sockAddr;
+        socklen_t len;
+	int sockfd,n;
+	const int on = 1;
+	struct sockaddr_in serverAddr;
+	
+	if((sockfd = socket(AF_INET, SOCK_DGRAM, 0)) == -1)
+	{
+                printf("error createNewConnection:socket() errno:%d\n", errno);
+		return -1;	  
+	}
+
+	if((n = setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on))) == -1)
+        {
+	        printf("error createNewConnection:setsockopt() errno:%d\n", errno);
+	}
+
+
+        inet_pton(AF_INET, conn->serverIp, &serverAddr.sin_addr);
+	serverAddr.sin_family = AF_INET;
+        serverAddr.sin_port = htons(0);
+        
+	if((n = bind(sockfd, (struct sockaddr*)&serverAddr, sizeof(serverAddr))) == -1)
+        {
+	        printf("error createNewConnection:bind() errno:%d\n", errno);
+		return -1;
+	}		
+
 	bzero(&sockAddr, sizeof(sockAddr));
         len = sizeof(sockAddr);
-        memset(buf, 0, sizeof(buf));
-        if (getsockname(connectionfd, (struct sockaddr *)&sockAddr, &len) == -1)
-        	err_quit("error getsockname() errno:%d\n", errno);
-                        
-	printf("Server(child) IP:%s Port:%d\n", inet_ntop(AF_INET, &sockAddr.sin_addr, buf, sizeof(buf)),ntohs(sockAddr.sin_port));  
-	serverPort = ntohs(sockAddr.sin_port);
-	
+        bzero(buf, sizeof(buf));
+        if (getsockname(sockfd, (struct sockaddr *)&sockAddr, &len) == -1)
+        {
+		printf("error createNewConnection:getsockname() errno:%d\n", errno);
+        	return -1;
+	}                
+	conn->serverPort = ntohs(sockAddr.sin_port);
+	printf("Server(child) IP:%s Port:%d\n", inet_ntop(AF_INET, &sockAddr.sin_addr, buf, sizeof(buf)), conn->serverPort);  
 	
 	bzero(&sockAddr, sizeof(sockAddr));
         sockAddr.sin_family = AF_INET;
-        sockAddr.sin_port = htons(clientPort);
-        if((n=inet_pton(AF_INET, clientIp, &sockAddr.sin_addr))!=1)
-                err_quit("error inet_pton() n:%d errno:%d\n", n, errno);
- 	
-	if((n = connect(connectionfd,(SA *)&sockAddr, sizeof(sockAddr))) == -1)   
-        	err_quit("error connect() errno:%d\n", errno);
-		
-	memset(buf, 0, sizeof(buf));
-	sprintf(buf, "%d", serverPort);
-        if(sendto(interfaces[index].sockfd, buf, sizeof(buf), 0, (struct sockaddr*)&sockAddr,sizeof(sockAddr))<0)
+        sockAddr.sin_port = htons(conn->clientPort);
+        if((n=inet_pton(AF_INET, conn->clientIp, &sockAddr.sin_addr))!=1)
+	{
+		printf("error createNewConnection:inet_pton() errno:%d\n", errno);
+		return -1;
+ 	}
+
+	if((n = connect(sockfd,(SA *)&sockAddr, sizeof(sockAddr))) == -1)
+	{
+        	printf("error createNewConnection:connect() errno:%d\n", errno);
+		return -1;
+	}
+	conn->sockfd = sockfd;
+	return 1;	
+}
+
+/*
+	bzero(buf, sizeof(buf));
+	sprintf(buf, "%d", conn->serverPort);
+        if(sendto(listenfd, buf, sizeof(buf), 0, (struct sockaddr*)&sockAddr,sizeof(sockAddr))<0)
         	err_quit("error sendto() errno:%d\n", errno);
 
 	fd_set  rset;
         FD_ZERO(&rset);
         for ( ; ; )
         {
-         	FD_SET(connectionfd, &rset);
-		if ( (n = select(connectionfd+1, &rset, NULL, NULL, NULL)) < 0)
+         	FD_SET(sockfd, &rset);
+		if ( (n = select(sockfd+1, &rset, NULL, NULL, NULL)) < 0)
                 {
                 	if (errno == EINTR)
                         	continue;
@@ -142,12 +176,12 @@ void handleNewConnection(int index, struct bind_info* interfaces, int numInterfa
                 }
                 else
                 {
-                	if (FD_ISSET(connectionfd, &rset))
+                	if (FD_ISSET(sockfd, &rset))
                         {
 				bzero(&sockAddr, sizeof(sockAddr));
         			memset(buf, 0, MAXLINE);
 
-				if(recvfrom(connectionfd, buf, MAXLINE, 0, (struct sockaddr *)&sockAddr, &len)!=0)
+				if(recvfrom(sockfd, buf, MAXLINE, 0, (struct sockaddr *)&sockAddr, &len)!=0)
         			{
 					printf("read on connction port:%s\n", buf);
         			}
@@ -156,6 +190,8 @@ void handleNewConnection(int index, struct bind_info* interfaces, int numInterfa
 	}
 	exit(0);
 }
+*/
+
 
 int main(int argc, char* argv)
 {
@@ -216,6 +252,7 @@ int main(int argc, char* argv)
 
 	FD_ZERO(&rset);
 	maxfdp++;
+
 	for ( ; ; )
         {
 		for (i = 0; i < numInterfaces; i++)
@@ -235,16 +272,60 @@ int main(int argc, char* argv)
 			{
 				if (FD_ISSET(interfaces[i].sockfd, &rset))
 				{
-					pid_t   pid;	
-					if ( (pid = fork())  < 0)
-						err_quit("error fork() errno:%d\n", errno);
-					else if (pid >  0) 	/* child */
-					{  
-						printf("forked new server(child) with pid:%d\n", pid);
-					}
-					else
-					{
-						handleNewConnection(i, interfaces, numInterfaces);
+					char    fileName[MAXLINE];
+					struct sockaddr_in sockAddr;
+					socklen_t len = sizeof(sockAddr);
+					//write a generic recieve which will return the msgtype
+					//based on the received msg type take action				
+					if(recvfrom(interfaces[i].sockfd, fileName, MAXLINE, 0, (struct sockaddr *)&sockAddr, &len)!=0)
+        				{
+						char serverIp[INET_ADDRSTRLEN];
+						inet_ntop(AF_INET, &((struct sockaddr_in *)(interfaces[i].bind_ipaddr))->sin_addr, serverIp, sizeof(serverIp));
+						struct connection* conn = is_dup_connection(&sockAddr, serverIp, fileName);
+						if(conn->pid == -1)
+						{
+							printf("From:%s ", conn->clientIp);
+                        				printf("Port:%d ", conn->clientPort);
+                        				printf("Data:%s\n", fileName);
+							pid_t   pid;	
+
+							if ( (pid = fork())  < 0)
+								err_quit("error fork() errno:%d\n", errno);
+							else if (pid >  0) 	/* child */
+							{
+								conn->pid = pid;  
+								printf("forked new server(child) with pid:%d\n", pid);
+							}
+							else
+							{
+								int j;
+								for(j=0;j<numInterfaces;j++)
+                							if(i!=j)   
+                        							close(interfaces[j].sockfd);
+								if(createNewConnection(conn) == -1)
+									err_quit("error createNewConnection.\n");
+								
+								//if we reach here we have both listenfd and connfd setup for client.
+								//now send the serverport to client and let it rebind.
+
+								bzero(&sockAddr, sizeof(sockAddr));
+								len = sizeof(sockAddr);
+								inet_pton(AF_INET, conn->clientIp, &sockAddr.sin_addr);
+        							sockAddr.sin_family = AF_INET;
+        							sockAddr.sin_port = htons(conn->clientPort);
+								char outbuf[MAXLINE];
+								char inbuf[MAXLINE];
+								printf("Sending serverPort: %d to Client:%s Port:%d\n", conn->serverPort, conn->clientIp, conn->clientPort);
+								sprintf(outbuf, "%d", conn->serverPort);
+								n = dg_send_recv(interfaces[i].sockfd, outbuf, sizeof(outbuf), inbuf, sizeof(inbuf), (struct 
+sockaddr*)&sockAddr, len);
+								if(n==-1)
+									printf("failed to send to client\n");
+								exit(0);
+							}
+						}
+						else
+							printf("Duplicate request, ignoring.\n");
 					}
 				}		
  			}
