@@ -66,91 +66,74 @@ static void sig_alrm(int signo)
 
 int requestRebind(struct connection* conn)
 {
-	//we should create a MSG_FILE request and send it to server on listing port
+	//we should create a MSG_SYN request and send it to server on listing port
 	//we should use timer to resend the msg till we get a rebound port
 
-	ssize_t n;
-        struct iovec iovsend[2], iovrecv[1];
-        struct hdr recvhdr;
-	char buf[MAXLINE];
+	struct packet_t* packet = (struct packet_t*) malloc(sizeof(struct packet_t));
+	bzero(packet, sizeof(struct packet_t));
 	
-	bzero(&msgsend, sizeof(msgsend));
-        bzero(&msgrecv, sizeof(msgrecv));
-        
-        if (rttinit == 0)
+	packet->seq = 1001;
+	packet->msgType = MSG_SYN;
+	strcpy(packet->msg, "test.txt");
+	
+        struct timeval timeout;
+        timeout.tv_sec = 5;
+        timeout.tv_usec = 0;
+	
+	fd_set  rset;
+        FD_ZERO(&rset);
+        for ( ; ; )
         {
-                rtt_init(&rttinfo);
-                rttinit = 1;
-                rtt_d_flag = 1;
-        }
-
-	conn->header.seq++;
-        conn->header.msgType = MSG_FILE;
- 
-        msgsend.msg_iov = iovsend;
-        msgsend.msg_iovlen = 2;
-        iovsend[0].iov_base = &conn->header;
-        iovsend[0].iov_len = sizeof(struct hdr);
-        iovsend[1].iov_base = conn->fileName;
-        iovsend[1].iov_len = sizeof(conn->fileName);   
-        
-        iovrecv[0].iov_base = &recvhdr;
-        iovrecv[0].iov_len = sizeof(struct hdr);
-        iovrecv[1].iov_base = buf;
-        iovrecv[1].iov_len = sizeof(buf);
-
-        Signal(SIGALRM, sig_alrm);
-        rtt_newpack(&rttinfo);
-
-sendagain:
-        conn->header.ts = rtt_ts(&rttinfo);
-        if(sendmsg(conn->sockfd, &msgsend, 0) == -1)
-                printf("error requestRebind:sendmsg() errno:%d\n", errno);
-
-	alarm(rtt_start(&rttinfo));
-        
-        if (sigsetjmp(jmpbuf, 1) != 0)
-        {
-                if (rtt_timeout(&rttinfo) < 0)
+                udp_send(conn->sockfd, packet, NULL);
+                FD_SET(conn->sockfd, &rset);
+                if (select(conn->sockfd+1, &rset, NULL, NULL, &timeout) < 0)
                 {
-                        err_msg("dg_send_recv: no response from client, giving up");
-                        rttinit = 0;        /* reinit in case we're called again */
-                        errno = ETIMEDOUT;
-                        return (-1);
+                        if (errno == EINTR)
+                                continue;
+                        else
+                        {
+                                printf("error requestRebind:select() errno:%d\n", errno);
+                                return -1;
+                        }
                 }
-                printf("requestRebind:Retransmitting. rtt_rto:%d\n", rttinfo.rtt_rto);
-                goto sendagain;
+                else
+                {       
+                        if (FD_ISSET(conn->sockfd, &rset))
+                        {
+				struct packet_t* recvPacket = (struct packet_t*)malloc(sizeof(struct packet_t));
+				struct sockaddr_in sockAddr;
+				printf("client calling udp_recv.\n");
+                                if(udp_recv(conn->sockfd, recvPacket, (SA*) &sockAddr) == 1)
+                                {
+                                        if(recvPacket->msgType == MSG_ACK && recvPacket->seq == 1001)
+					{
+						printf("Received new binding port. Rebinding to port.\n");
+        					sockAddr.sin_port = htons(atoi(recvPacket->msg));
+        					if(connect(conn->sockfd,(SA *)&sockAddr, sizeof(sockAddr)) == -1)
+        					{       
+                					printf("error requestRebind:connect() errno:%d\n", errno);
+                					return -1;
+        					}
+						free(recvPacket);
+        					printf("Port rebound successful.\n");
+						goto sendack;						
+					}  
+                                }
+                        }   
+                        else
+                                printf("requestRebind: timed out. resending.\n");
+		}
         }
-	
-	printf("waiting for the reconnect port from server...\n");
+        return -1;
 
-	do      
-        { 
-                if((n = recvmsg(conn->sockfd, &msgrecv, 0)) == -1)
-			printf("error requestRebind:recvmsg() errno:%d\n", errno);
 
-        }while (n < sizeof(struct hdr) || recvhdr.seq != conn->header.seq || recvhdr.msgType != MSG_PORT);
-	
-	alarm(0);
-        rtt_stop(&rttinfo, rtt_ts(&rttinfo) - recvhdr.ts);
-
-	printf("Read from listening port: %s\n", buf);
-	struct sockaddr_in sockAddr;
-	socklen_t len = sizeof(sockAddr);
-        if (getpeername(conn->sockfd, (struct sockaddr *)&sockAddr, &len) == -1)
-        {
-                printf("error requestRebind:getpeername() errno:%d\n", errno);
-                return -1;
-        }
-
-	sockAddr.sin_port = htons(atoi(buf));
-	if((n = connect(conn->sockfd,(SA *)&sockAddr, sizeof(sockAddr))) == -1)
-        {
-		printf("error requestRebind:connect() errno:%d\n", errno);
-		return -1;
-	}
-	printf("Port rebound successful.\n");
-	return 1;
+sendack:
+	bzero(packet, sizeof(struct packet_t));
+                                                        
+        packet->seq = 1002;
+        packet->msgType = MSG_ACK;
+	udp_send(conn->sockfd, packet, NULL);
+	free(packet);
 }
 
 int createNewConnection(struct connection* conn)
@@ -225,58 +208,6 @@ int createNewConnection(struct connection* conn)
 	return 1;
 }
 
-/*	
-	memset(buf, 0, sizeof(buf));
-	sprintf(buf,"test.txt");
-        if(write(sockfd, buf, strlen(buf))<0)
-        	err_quit("error write() errno:%d\n", errno);
-                	
-	fd_set  rset;
-	FD_ZERO(&rset);
-	for ( ; ; )
-        {
-		FD_SET(sockfd, &rset);
-		printf("waiting for the reconnect port from server...\n");
-		if ( (n = select(sockfd+1, &rset, NULL, NULL, NULL)) < 0)
-		{
-             		if (errno == EINTR)
-                                continue;
-                        else
-                               	err_quit("error select() errno:%d\n", errno);
-                }	
-		else
-                {
-			if (FD_ISSET(sockfd, &rset))
-                        {
-				bzero(buf, sizeof(buf));
-				n = dg_recv_send(sockfd, buf, sizeof(buf));
-				printf("Read from listening port: %s\n", buf);
-
-				memset(buf, 0, sizeof(buf));
-				bzero(&sockAddr, sizeof(sockAddr));
-				if(recvfrom(sockfd, buf, MAXLINE, 0, (struct sockaddr *)&sockAddr, &len)!=0)
-        			{
-					printf("read from listening port:%s\n", buf);
-					sockAddr.sin_port = htons(atoi(buf));
-					printf("Reconnecting server at port:%d\n", atoi(buf));
-					if((n = connect(sockfd,(SA *)&sockAddr, sizeof(sockAddr))) == -1)
-                				err_quit("error connect() errno:%d\n", errno);
-					while(1)
-					{
-						printf("enter string to send:");
-						gets(buf);
-						if(strcmp(buf, "exit") == 0)
-							exit(0);
-				                if(write(sockfd, buf, strlen(buf))<0)
-                                			err_quit("error write() errno:%d\n", errno);
-					}
-				}
-			}
-		}
-	}	
-}
-*/
-
 int main(int argc, char* argv)
 {
 	int i, n, numInterfaces;
@@ -308,7 +239,8 @@ int main(int argc, char* argv)
 
 	if(createNewConnection(conn)==-1)
 		err_quit("Unable to connect to server.\n");
-	
+
+	printf("Requesting rebound port.\n");	
 	if(requestRebind(conn) == -1)
-		err_quit("Unable to request rebind port from server.\n");	
+		err_quit("Unable to request rebind port from server.\n");
 }

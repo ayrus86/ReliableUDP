@@ -1,14 +1,16 @@
 #include "unp.h"
 
-#define MSG_PORT 1
-#define MSG_FILE 2
+#define MSG_SYN 1
+#define MSG_SYNACK 2
 #define MSG_ACK 3
-#define MSG_CLOSE 4
+#define MSG_FILE 4
+#define MSG_DATE 5
 
-struct hdr{
+struct packet_t{
         int msgType;
         uint32_t seq;
-        uint32_t ts;
+	uint32_t ts;
+	char msg[512];
 };
 
 struct connection{
@@ -18,14 +20,13 @@ struct connection{
 	int clientPort;
 	char serverIp[INET_ADDRSTRLEN];
 	int serverPort;
+	int seq;
 	char fileName[25];
-	struct hdr header;
 	struct connection* next;
   	struct connection* prev;
 };
 
 
-//struct hdr sendhdr, recvhdr;
 struct connection* connections;
-static struct msghdr msgsend, msgrecv; 
-
+int udp_recv(int sockfd, struct packet_t* packet, struct sockaddr* sockAddr);
+int udp_send(int sockfd, struct packet_t* packet, struct sockaddr* sockAddr);

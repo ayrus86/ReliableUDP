@@ -156,41 +156,59 @@ int createNewConnection(struct connection* conn)
 	return 1;	
 }
 
-/*
-	bzero(buf, sizeof(buf));
-	sprintf(buf, "%d", conn->serverPort);
-        if(sendto(listenfd, buf, sizeof(buf), 0, (struct sockaddr*)&sockAddr,sizeof(sockAddr))<0)
-        	err_quit("error sendto() errno:%d\n", errno);
+
+int sendRebindPort(int sockfd, struct sockaddr* sockAddr, int seq, struct connection* conn)
+{
+	struct packet_t* packet = (struct packet_t*) malloc(sizeof(struct packet_t));
+        bzero(packet, sizeof(struct packet_t));
+
+	packet->seq = seq;
+        packet->msgType = MSG_ACK;
+        sprintf(packet->msg,"%d", conn->serverPort);
+
+ 	struct timeval timeout;
+        timeout.tv_sec = 5;
+        timeout.tv_usec = 0;
 
 	fd_set  rset;
         FD_ZERO(&rset);
         for ( ; ; )
         {
-         	FD_SET(sockfd, &rset);
-		if ( (n = select(sockfd+1, &rset, NULL, NULL, NULL)) < 0)
+		udp_send(sockfd, packet, sockAddr);
+         	FD_SET(conn->sockfd, &rset);
+		if (select(conn->sockfd+1, &rset, NULL, NULL, &timeout) < 0)
                 {
                 	if (errno == EINTR)
                         	continue;
                         else
-                        	 err_quit("error select() errno:%d\n", errno);
-                }
+			{
+                        	printf("error sendRebindPort:select() errno:%d\n", errno);
+				return -1;
+                	}
+		}
                 else
                 {
-                	if (FD_ISSET(sockfd, &rset))
+                	if (FD_ISSET(conn->sockfd, &rset))
                         {
-				bzero(&sockAddr, sizeof(sockAddr));
-        			memset(buf, 0, MAXLINE);
+				struct packet_t* recvPacket = (struct packet_t*)malloc(sizeof(struct packet_t));
+                                struct sockaddr_in sockAddr;
 
-				if(recvfrom(sockfd, buf, MAXLINE, 0, (struct sockaddr *)&sockAddr, &len)!=0)
-        			{
-					printf("read on connction port:%s\n", buf);
-        			}
-			}               
+				if(udp_recv(conn->sockfd, recvPacket, (SA*) &sockAddr) == 1)
+				{
+					if(recvPacket->msgType == MSG_ACK)
+					{
+						printf("Got ACK on rebound port. Threeway Handshake succesful.\n");
+						free(recvPacket);
+						return 1;
+					}
+				}
+			}
+			else
+				printf("sendRebindPort: timed out. resending.\n");               
 		}
 	}
-	exit(0);
+	return -1;
 }
-*/
 
 
 int main(int argc, char* argv)
@@ -258,7 +276,7 @@ int main(int argc, char* argv)
 		for (i = 0; i < numInterfaces; i++)
         		FD_SET(interfaces[i].sockfd, &rset);
 		
-		printf("waiting for connections...\n");	
+		printf("waiting for connections...\n");
 		if ( (n = select(maxfdp, &rset, NULL, NULL, NULL)) < 0)
                 {
                 	if (errno == EINTR)
@@ -268,25 +286,27 @@ int main(int argc, char* argv)
                 }  
 		else
 		{
+			printf("out of select. looping through interfaces.\n");
 			for (i = 0; i < numInterfaces; i++)
 			{
 				if (FD_ISSET(interfaces[i].sockfd, &rset))
 				{
-					char    fileName[MAXLINE];
+					struct packet_t* recvPacket = (struct packet_t*) malloc(sizeof(struct packet_t));
+        				bzero(recvPacket, sizeof(struct packet_t));
 					struct sockaddr_in sockAddr;
-					socklen_t len = sizeof(sockAddr);
-					//write a generic recieve which will return the msgtype
-					//based on the received msg type take action				
-					if(recvfrom(interfaces[i].sockfd, fileName, MAXLINE, 0, (struct sockaddr *)&sockAddr, &len)!=0)
-        				{
+					socklen_t len = sizeof(sockAddr);		
+					printf("calling udp_recv.\n");
+					if(udp_recv(interfaces[i].sockfd, recvPacket, (SA*) &sockAddr) == 1)
+					{
+						printf("read fileName:%s msgType:%d seq:%d\n", recvPacket->msg, recvPacket->msgType, recvPacket->seq);
 						char serverIp[INET_ADDRSTRLEN];
 						inet_ntop(AF_INET, &((struct sockaddr_in *)(interfaces[i].bind_ipaddr))->sin_addr, serverIp, sizeof(serverIp));
-						struct connection* conn = is_dup_connection(&sockAddr, serverIp, fileName);
-						if(conn->pid == -1)
+						struct connection* conn = is_dup_connection(&sockAddr, serverIp, recvPacket->msg);
+						if(conn->pid == -1 && recvPacket->msgType == MSG_SYN)
 						{
 							printf("From:%s ", conn->clientIp);
                         				printf("Port:%d ", conn->clientPort);
-                        				printf("Data:%s\n", fileName);
+                        				printf("Data:%s\n", recvPacket->msg);
 							pid_t   pid;	
 
 							if ( (pid = fork())  < 0)
@@ -302,30 +322,37 @@ int main(int argc, char* argv)
 								for(j=0;j<numInterfaces;j++)
                 							if(i!=j)   
                         							close(interfaces[j].sockfd);
+								
 								if(createNewConnection(conn) == -1)
-									err_quit("error createNewConnection.\n");
+									err_quit("error createNewConnection().\n");
 								
 								//if we reach here we have both listenfd and connfd setup for client.
 								//now send the serverport to client and let it rebind.
-
-								bzero(&sockAddr, sizeof(sockAddr));
-								len = sizeof(sockAddr);
-								inet_pton(AF_INET, conn->clientIp, &sockAddr.sin_addr);
-        							sockAddr.sin_family = AF_INET;
-        							sockAddr.sin_port = htons(conn->clientPort);
-								char outbuf[MAXLINE];
-								char inbuf[MAXLINE];
-								printf("Sending serverPort: %d to Client:%s Port:%d\n", conn->serverPort, conn->clientIp, conn->clientPort);
-								sprintf(outbuf, "%d", conn->serverPort);
-								n = dg_send_recv(interfaces[i].sockfd, outbuf, sizeof(outbuf), inbuf, sizeof(inbuf), (struct 
-sockaddr*)&sockAddr, len);
-								if(n==-1)
-									printf("failed to send to client\n");
+								if(sendRebindPort(interfaces[i].sockfd, (SA*)&sockAddr, recvPacket->seq, conn) == -1)
+									err_quit("error sendRebindPort().\n");
+		
+								close(interfaces[i].sockfd);
+								//sendfile(conn->sockfd);
 								exit(0);
 							}
 						}
-						else
-							printf("Duplicate request, ignoring.\n");
+						else if(recvPacket->msgType == MSG_SYN)
+						{
+							printf("Duplicate request, Sending on both listening and connection fd.\n");
+							
+							struct packet_t* packet = (struct packet_t*) malloc(sizeof(struct packet_t));
+						        bzero(packet, sizeof(struct packet_t));
+                                
+        						packet->seq = recvPacket->seq;
+        						packet->msgType = MSG_ACK;
+        						sprintf(packet->msg,"%d", conn->serverPort);
+
+							if(udp_send(interfaces[i].sockfd, packet,(SA *) &sockAddr) == -1)
+                                                                        err_quit("error sending the binding port number.\n");
+							
+							if(udp_send(conn->sockfd, packet,(SA *) &sockAddr) == -1)
+                                                                        err_quit("error sending the binding port number.\n");
+						}
 					}
 				}		
  			}
