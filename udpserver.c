@@ -8,10 +8,36 @@ static struct msghdr msgsend, msgrecv;
 
 void signalHandler(int signal)
 {                               
-        pid_t    pid;
+        pid_t     pid;
         int      stat;           
         while ( (pid = waitpid(-1, &stat, WNOHANG)) > 0)
-                 printf("Server(child) %d terminated.\n", pid);
+        {         
+
+		struct connection* cur = connections;
+		while(cur != NULL)
+		{
+			if(cur->pid != pid)
+				cur=cur->next;
+			else
+			{
+				if(cur->prev!=NULL)
+					cur->prev->next = cur->next;
+				if(cur->next!=NULL)
+					cur->next->prev = cur->prev;
+			
+				if(connections == cur)
+				{
+					connections = connections->next;
+				}
+			
+				close(cur->sockfd);
+				free(cur);
+				printf("Succesfully released the resources of server(child):%d\n", pid);
+				return;
+			}
+		}
+	}
+	
         return;                  
 }
 
@@ -156,16 +182,13 @@ int createNewConnection(struct connection* conn)
 	return 1;	
 }
 
-int sendFile(struct connection* conn, int n)
+int sendFile(struct connection* conn)
 {
 	struct packet_t* packet = (struct packet_t*) malloc(sizeof(struct packet_t));
         bzero(packet, sizeof(struct packet_t));
-	packet->seq = n;
+	packet->seq = conn->seq;
         packet->msgType = MSG_DATA;
-
 	struct timeval timeout;
-        timeout.tv_sec = 5;
-        timeout.tv_usec = 0;
 
 	FILE *fp = fopen(conn->fileName, "r");	
 	fd_set  rset;
@@ -181,7 +204,9 @@ int sendFile(struct connection* conn, int n)
 
 	for(;;)
 	{
-		printf("sending file n:%d msg:%s\n", n, packet->msg);
+        	timeout.tv_sec = 5;
+	        timeout.tv_usec = 0;
+		printf("sending file seq:%d\n", conn->seq);
 		udp_send(conn->sockfd, packet, NULL);
 		FD_SET(conn->sockfd, &rset);
                 if (select(conn->sockfd+1, &rset, NULL, NULL, &timeout) < 0)
@@ -202,24 +227,27 @@ int sendFile(struct connection* conn, int n)
                                 struct sockaddr_in sockAddr;
                                 if(udp_recv(conn->sockfd, recvPacket, (SA*) &sockAddr) == 1)
                                 {
-					if(recvPacket->msgType == MSG_ACK && recvPacket->seq == n+1)
+					if(recvPacket->msgType == MSG_ACK && recvPacket->seq == conn->seq+1)
                                         {
+						conn->seq = recvPacket->seq;
 						if(!feof(fp))
         					{        
                 					bzero(packet->msg, sizeof(packet->msg));
                 					fgets(packet->msg,512,fp);
-							packet->seq = ++n;
+							packet->seq = conn->seq;
         					}        
         					else if(eof == 0)
 						{
 							bzero(packet->msg, sizeof(packet->msg));
 							packet->msgType = MSG_EOF;
-							packet->seq = ++n;
+							packet->seq = conn->seq;
 							eof = 1;
 						}
 						else
 							break;
 					}
+					else if(recvPacket->msgType == MSG_EOF && recvPacket->seq == conn->seq)
+						break;
 				} 	
 			}
 		}
@@ -229,12 +257,12 @@ int sendFile(struct connection* conn, int n)
 	printf("successfully finished sending file.\n");
 }
 
-int sendRebindPort(int sockfd, struct sockaddr* sockAddr, int seq, struct connection* conn)
+int sendRebindPort(int sockfd, struct sockaddr* sockAddr, struct connection* conn)
 {
 	struct packet_t* packet = (struct packet_t*) malloc(sizeof(struct packet_t));
         bzero(packet, sizeof(struct packet_t));
 
-	packet->seq = seq;
+	packet->seq = conn->seq;
         packet->msgType = MSG_ACK;
         sprintf(packet->msg,"%d", conn->serverPort);
 
@@ -267,17 +295,17 @@ int sendRebindPort(int sockfd, struct sockaddr* sockAddr, int seq, struct connec
 
 				if(udp_recv(conn->sockfd, recvPacket, (SA*) &sockAddr) == 1)
 				{
-					if(recvPacket->msgType == MSG_ACK)
+					if(recvPacket->msgType == MSG_ACK && recvPacket->seq == conn->seq+1)
 					{
-						printf("Got ACK on rebound port. 3-way Handshake successful.\n");
-						int n = recvPacket->seq;
+						conn->seq = recvPacket->seq;
+						printf("Got ACK on rebound port. 3-way Handshake successful. seq:%d\n", conn->seq);
 						free(recvPacket);
-						return n;
+						return 1;
 					}
 				}
 			}
 			else
-				printf("sendRebindPort: timed out. resending.\n");               
+				printf("sendRebindPort: timed out. resending seq:%d\n", conn->seq);               
 		}
 	}
 	return -1;
@@ -373,6 +401,7 @@ int main(int argc, char* argv)
 						char serverIp[INET_ADDRSTRLEN];
 						inet_ntop(AF_INET, &((struct sockaddr_in *)(interfaces[i].bind_ipaddr))->sin_addr, serverIp, sizeof(serverIp));
 						struct connection* conn = is_dup_connection(&sockAddr, serverIp, recvPacket->msg);
+						conn->seq = recvPacket->seq;
 						if(conn->pid == -1 && recvPacket->msgType == MSG_SYN)
 						{
 							printf("From:%s ", conn->clientIp);
@@ -399,11 +428,11 @@ int main(int argc, char* argv)
 								
 								//if we reach here we have both listenfd and connfd setup for client.
 								//now send the serverport to client and let it rebind.
-								if((n=sendRebindPort(interfaces[i].sockfd, (SA*)&sockAddr, recvPacket->seq, conn)) == -1)
+								if(sendRebindPort(interfaces[i].sockfd, (SA*)&sockAddr, conn) == -1)
 									err_quit("error sendRebindPort().\n");
 		
 								close(interfaces[i].sockfd);
-								if(sendFile(conn, n) == -1)
+								if(sendFile(conn) == -1)
 									err_quit("error sendFile().\n");
 								exit(0);
 							}
@@ -415,7 +444,7 @@ int main(int argc, char* argv)
 							struct packet_t* packet = (struct packet_t*) malloc(sizeof(struct packet_t));
 						        bzero(packet, sizeof(struct packet_t));
                                 
-        						packet->seq = recvPacket->seq;
+        						packet->seq = conn->seq;
         						packet->msgType = MSG_ACK;
         						sprintf(packet->msg,"%d", conn->serverPort);
 

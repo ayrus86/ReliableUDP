@@ -14,6 +14,7 @@ static void sig_alrm(int signo)
 	siglongjmp(jmpbuf, 1);
 }
 
+
 int udp_recv(int sockfd, struct packet_t* packet, struct sockaddr* sockAddr)
 {
 	int len = sizeof(*sockAddr);
@@ -37,74 +38,91 @@ int udp_send(int sockfd, struct packet_t* packet, struct sockaddr* sockAddr)
         return -1; 
 	
 }
-
 /*
-ssize_t dg_send_recv(int fd, const void *outbuff, size_t outbytes, void *inbuff, size_t inbytes, const SA *destaddr, socklen_t destlen)
+
+int deQueue(struct packet_t* packet)  
 {
-	ssize_t n;
-	struct iovec iovsend[2], iovrecv[2];
-
-	struct hdr sendhdr, recvhdr;
-
-	if (rttinit == 0) 
+	pthread_mutex_lock(&queMutex);
+        if(queueCapacity == queueSize) //read everything nothing to read;
+        {
+		pthread_mutex_unlock(&queMutex);
+	        return -1;
+        }
+	memcpy(packet, &queue[tail], sizeof(struct packet_t));
+        bzero(&queue[tail], sizeof(struct packet_t));
+        queueCapacity++;
+        tail = (tail+1) % queueSize;
+	pthread_mutex_unlock(&queMutex);
+        return 1;
+}
+                
+int peekQueueTail(struct packet_t* packet)
+{
+	pthread_mutex_lock(&queMutex);
+        if(queueCapacity == queueSize)
 	{
-		rtt_init(&rttinfo);
-		rttinit = 1;
-		rtt_d_flag = 1;
-	}
+		pthread_mutex_unlock(&queMutex);
+                return -1;
+        }
+	memcpy(packet, &queue[tail], sizeof(struct packet_t));
+	pthread_mutex_unlock(&queMutex);
+	return 1;
+}
 
-	sendhdr.seq++;
-	msgsend.msg_name = destaddr;
-	msgsend.msg_namelen = destlen;
-	msgsend.msg_iov = iovsend;
-	msgsend.msg_iovlen = 2;
-	
-	iovsend[0].iov_base = &sendhdr;
-	iovsend[0].iov_len = sizeof(struct hdr);
-	iovsend[1].iov_base = outbuff;
-	iovsend[1].iov_len = outbytes;
-	printf("sending msg:%s\n", outbuff);
+int peekQueueHead(struct packet_t* packet)
+{
+	pthread_mutex_lock(&queMutex);
+        if(queueCapacity == queueSize)
+        {
+		pthread_mutex_unlock(&queMutex);
+	        return -1;
+	}       
+        memcpy(packet, &queue[head], sizeof(struct packet_t));
+        pthread_mutex_unlock(&queMutex);
+	return 1;
+}
 
-
-	msgrecv.msg_name = NULL;
-	msgrecv.msg_namelen = 0;
-	msgrecv.msg_iov = iovrecv;
-	msgrecv.msg_iovlen = 2;
-
-	iovrecv[0].iov_base = &recvhdr;
-	iovrecv[0].iov_len = sizeof(struct hdr);
-	iovrecv[1].iov_base = inbuff;
-	iovrecv[1].iov_len = inbytes;
-	
-	Signal(SIGALRM, sig_alrm);
-	rtt_newpack(&rttinfo);
-
-sendagain:
-	sendhdr.ts = rtt_ts(&rttinfo);
-	Sendmsg(fd, &msgsend, 0);
-	
-	alarm(rtt_start(&rttinfo));
-	
-	if (sigsetjmp(jmpbuf, 1) != 0)
-	{
-		if (rtt_timeout(&rttinfo) < 0)
-		{
-			err_msg("dg_send_recv: no response from client, giving up");
-			rttinit = 0;
-			errno = ETIMEDOUT;
-			return (-1);
-		}
-		printf("Retransmitting. rtt_rto:%d\n", rttinfo.rtt_rto);
-		goto sendagain;
-	}
-
-	do
-	{
-		n = Recvmsg(fd, &msgrecv, 0);
-	}while (n < sizeof(struct hdr) || recvhdr.seq != sendhdr.seq);
-	
-	alarm(0);
-	rtt_stop(&rttinfo, rtt_ts(&rttinfo) - recvhdr.ts);
-	return (n - sizeof(struct hdr)); 
+int enQueue(struct packet_t* packet)
+{
+	pthread_mutex_lock(&queMutex);
+        int n;
+        if(queueCapacity == 0)
+        {
+		pthread_mutex_unlock(&queMutex);
+	        return -1;
+        }
+	if(queueCapacity == queueSize)
+        {
+                memcpy(&queue[head], packet, sizeof(struct packet_t));
+                queueCapacity--;
+		pthread_mutex_unlock(&queMutex);
+        	printf("initial head:%d\n", head);
+                return 1;
+        }
+        else if((n = packet->seq - queue[head].seq) == 1)
+        {
+                head = (head+1)%queueSize;
+                memcpy(&queue[head], packet, sizeof(struct packet_t));
+                queueCapacity--;
+                
+                while(head!=tail && queue[(head+1)/queueSize].seq!=0)
+                {
+                        head = (head+1)%queueSize;
+                        queueCapacity--;
+                }
+		pthread_mutex_unlock(&queMutex);
+        	printf("head:%d\n", head);
+		exit(0);
+		return 1;
+        }
+        else if(n > 0 && n <= queueCapacity)
+        {
+                memcpy(&queue[(head+n)%queueSize], packet, sizeof(struct packet_t));
+		pthread_mutex_unlock(&queMutex);
+                return -1;
+        }
+                
+	pthread_mutex_unlock(&queMutex);
+        return -1;
 }
 */

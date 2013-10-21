@@ -1,8 +1,8 @@
 #include <stdio.h>
 #include <setjmp.h>
 #include "unp.h"
-#include "unpifiplus.h"
 #include "udp.h"
+#include "unpifiplus.h"
 #include "unprtt.h"
 
 #define DEBUG 1
@@ -12,7 +12,113 @@ static int rttinit = 0;
 static void sig_alrm(int signo);
 static sigjmp_buf jmpbuf;
 
-void readConfig(char** serverIp, int* port)
+struct packet_t* queue;
+
+struct client_config_t{
+	char serverIp[INET_ADDRSTRLEN];
+	int serverPort;
+	char fileName[25];
+	int winSize;
+	int seed;
+	float lossProb;
+	int mean;
+};
+
+struct client_config_t* clientConfig;
+
+ int head;
+int tail;
+int queueCapacity;
+int queueSize;
+struct packet_t* queue;
+pthread_mutex_t queMutex;
+
+int deQueue(struct packet_t* packet)
+{
+        pthread_mutex_lock(&queMutex);
+        if(queueCapacity == queueSize) //read everything nothing to read;
+        {
+                pthread_mutex_unlock(&queMutex);
+                return -1;
+        }
+        memcpy(packet, &queue[tail], sizeof(struct packet_t));
+        bzero(&queue[tail], sizeof(struct packet_t));
+        queueCapacity++;
+        tail = (tail+1) % queueSize;
+        pthread_mutex_unlock(&queMutex);
+        return 1;
+}
+        
+int peekQueueTail(struct packet_t* packet)
+{
+        pthread_mutex_lock(&queMutex);
+/*        if(queueCapacity == queueSize)
+        {
+                pthread_mutex_unlock(&queMutex);
+                return -1;
+        }*/
+        memcpy(packet, &queue[tail], sizeof(struct packet_t));
+        pthread_mutex_unlock(&queMutex);
+        return 1;
+}
+
+int peekQueueHead(struct packet_t* packet)
+{
+        pthread_mutex_lock(&queMutex);
+/*        if(queueCapacity == queueSize)
+        {
+                pthread_mutex_unlock(&queMutex);
+                return -1;
+        }*/       
+        memcpy(packet, &queue[head], sizeof(struct packet_t));
+        pthread_mutex_unlock(&queMutex);
+        return 1;
+}
+
+int enQueue(struct packet_t* packet)
+{
+        pthread_mutex_lock(&queMutex);
+        int n;
+        if(queueCapacity == 0)
+        {
+                pthread_mutex_unlock(&queMutex);
+                return -1;
+        }
+        if(queueCapacity == queueSize)
+        {
+                memcpy(&queue[head], packet, sizeof(struct packet_t));
+                queueCapacity--;
+                pthread_mutex_unlock(&queMutex);
+                printf("initial head:%d pid:%d\n", head, getpid());
+                return 1; 
+        }
+        else if((n = packet->seq - queue[head].seq) == 1)
+        {
+                head = (head+1) % queueSize;
+		memcpy(&queue[head], packet, sizeof(struct packet_t));
+                queueCapacity--;
+                printf("head:%d queueSize:%d pid:%d\n", head, queueSize, getpid());
+                
+               /* while(head!=tail && queue[(head+1)/queueSize].seq!=0)
+                {       
+                        head = (head+1)%queueSize;
+                        queueCapacity--;
+                }*/
+                pthread_mutex_unlock(&queMutex);
+                return 1;
+        }
+        else if(n > 0 && n <= queueCapacity)
+        {       
+                memcpy(&queue[(head+n)%queueSize], packet, sizeof(struct packet_t));
+                pthread_mutex_unlock(&queMutex);
+                return -1;
+        }
+        
+        pthread_mutex_unlock(&queMutex);
+        return -1;
+}
+
+void readConfig()
 {
         FILE *fp;
         char line[80];
@@ -22,15 +128,39 @@ void readConfig(char** serverIp, int* port)
                 printf("Can't open client.in file\n");
                 exit(1);
         }
-
-        memset(line, 0, 80);
-	fgets(line,80,fp);
+        
+	bzero(line, 80);
+	fgets(line, 80, fp);
 	strtok(line, "\n");
+	strcpy(clientConfig->serverIp, line);
+	
+	bzero(line, 80);
+	clientConfig->serverPort = atoi(fgets(line, 80, fp));
+	
+	bzero(line, 80);
+	fgets(line, 80, fp);
+	strtok(line, "\n");
+	strcpy(clientConfig->fileName, line);
+
+	bzero(line, 80);
+	clientConfig->winSize = atoi(fgets(line, 80, fp));
+	
+	bzero(line, 80);
+	clientConfig->seed = atoi(fgets(line, 80, fp));
+
+	bzero(line, 80);
+	clientConfig->lossProb = atof(fgets(line, 80, fp));
+
+	bzero(line, 80);
+	clientConfig->mean = atoi(fgets(line, 80, fp));
+
+	/*
 	*serverIp = (char *) malloc(INET_ADDRSTRLEN);
 	strcpy(*serverIp, line);
         memset(line, 0, 80);
-        *port = atoi(fgets(line, 80, fp));
-        fclose(fp);
+        *port = atoi(fgets(line, 80, fp));*/
+        
+	fclose(fp);
 }
 
 void getInterfaces(struct bind_info** addrInterfaces, int* numInterfaces)
@@ -64,17 +194,38 @@ static void sig_alrm(int signo)
         siglongjmp(jmpbuf, 1);
 } 
 
+int printQueue()
+{
+	int ret = 0;
+	struct packet_t packet;
+	while(1)
+	{
+		sleep(10);
+		if(deQueue(&packet)!=-1)
+		{
+			if(packet.msgType == MSG_EOF)
+			{
+				ret = 1;
+				pthread_exit(&ret);
+			}
+			printf("Read from queue:%s\n", packet.msg);
+			bzero(&packet, sizeof(packet));
+		}
+	}
+}
+
 int requestRebind(struct connection* conn)
 {
 	//we should create a MSG_SYN request and send it to server on listing port
 	//we should use timer to resend the msg till we get a rebound port
-
+	
 	struct packet_t* packet = (struct packet_t*) malloc(sizeof(struct packet_t));
 	bzero(packet, sizeof(struct packet_t));
 	
-	packet->seq = 1001;
+	packet->seq = conn->seq;
 	packet->msgType = MSG_SYN;
-	strcpy(packet->msg, "test.txt");
+	packet->ws = queueCapacity;
+	strcpy(packet->msg, conn->fileName);
 	
         struct timeval timeout;
         timeout.tv_sec = 5;
@@ -104,7 +255,7 @@ int requestRebind(struct connection* conn)
 				struct sockaddr_in sockAddr;
                                 if(udp_recv(conn->sockfd, recvPacket, (SA*) &sockAddr) == 1)
                                 {
-                                        if(recvPacket->msgType == MSG_ACK && recvPacket->seq == 1001)
+                                        if(recvPacket->msgType == MSG_ACK && recvPacket->seq == conn->seq)
 					{
 						printf("Received new binding port. Rebinding to port:%s.\n", recvPacket->msg);
         					sockAddr.sin_port = htons(atoi(recvPacket->msg));
@@ -127,26 +278,41 @@ int requestRebind(struct connection* conn)
 
 
 sendack:
-	udp_send(conn->sockfd, packet, NULL);
+	++conn->seq;
+	packet->seq = conn->seq;
+	packet->ws = queueCapacity;
+	packet->msgType = MSG_ACK;
+	memcpy(&queue[head], packet, sizeof(struct packet_t));
 	free(packet);
-	return 1002;
+	return 1;
 }
 
-int recvFile(struct connection* conn, int n)
+int recvFile(struct connection* conn)
 {
+	pthread_t tid;
+	pthread_create(&tid, NULL, (void*)&printQueue, NULL);
+
 	struct packet_t* packet = (struct packet_t*) malloc(sizeof(struct packet_t));
 	bzero(packet, sizeof(struct packet_t));
-        packet->seq = n;
-        packet->msgType = MSG_ACK;
-
-	struct timeval timeout;
-        timeout.tv_sec = 5;
-        timeout.tv_usec = 0;
 	
+	if(peekQueueHead(packet)==-1)
+		return -1;	
+	/*
+	packet->seq = conn->seq;
+	packet->ws = queueCapacity;
+        packet->msgType = MSG_ACK;
+	*/
+
+	int eof = 0;
+	struct timeval timeout;
 	fd_set  rset;
         FD_ZERO(&rset);
+	printf("before select\n");
+
 	for(;;)
         {
+	        timeout.tv_sec = 5;
+        	timeout.tv_usec = 0;
                 FD_SET(conn->sockfd, &rset);
                 if (select(conn->sockfd+1, &rset, NULL, NULL, &timeout) < 0)
                 {
@@ -162,37 +328,65 @@ int recvFile(struct connection* conn, int n)
                 {
 			if (FD_ISSET(conn->sockfd, &rset))
                         {
-                                struct packet_t* recvPacket = (struct packet_t*)malloc(sizeof(struct packet_t));
+                           	printf("in select got a packet\n");
+			        struct packet_t* recvPacket = (struct packet_t*)malloc(sizeof(struct packet_t));
                                 struct sockaddr_in sockAddr;
                                 if(udp_recv(conn->sockfd, recvPacket, (SA*) &sockAddr) == 1)
                                 {
-                                        if(recvPacket->msgType == MSG_DATA && recvPacket->seq == n)
+                                        if(recvPacket->msgType == MSG_DATA && recvPacket->seq >= packet->seq)
                                         {
-						printf("read file:%s\n", recvPacket->msg);
-						packet->seq = ++n;
+						if(enQueue(recvPacket) != -1)
+						{
+							packet->seq = queue[head].seq+1;
+							packet->ws = queueCapacity;
+						}
+						printf("sending ACK:%d\n", packet->seq);
+						//packet->seq = ++conn->seq;
 						free(recvPacket);
-						printf("sending ack n:%d\n", n);
+						//printf("sending ack seq:%d\n", conn->seq);
 						udp_send(conn->sockfd, packet, NULL);
 					}
-					else if(recvPacket->msgType == MSG_EOF)
+					else if(recvPacket->seq < queue[head].seq)
+						continue; //received a old duplicate packet. ignore it
+					else if(recvPacket->msgType == MSG_EOF && recvPacket->seq >= queue[head].seq)
 					{
-						packet->seq = ++n;
- 						udp_send(conn->sockfd, packet, NULL);
-						break;
+						int n = 0;
+						//packet->seq = ++conn->seq;
+						if((n = enQueue(recvPacket)) != -1)
+                                                {
+							
+							printf("inside eof if\n");							
+							packet->msgType = MSG_EOF;
+							packet->seq = queue[head].seq;
+ 							udp_send(conn->sockfd, packet, NULL);
+						}
+						else if(n == -1)
+						{
+							printf("inside eof else\n");					
+							break;
+						};
 					}
 				}
 			}
 			else
 			{
-				printf("recvFile: timeout. sending ack n:%d\n", n);
-				 udp_send(conn->sockfd, packet, NULL);
+				printf("recvFile: timeout. sending ack n:%d\n", conn->seq);
+				udp_send(conn->sockfd, packet, NULL);
 			}
 		}
 	}
-	free(packet);	
-	printf("finished reading file.\n");
-	return 1;
+	free(packet);
+	int* retval;
+	pthread_join(tid, (void *)&retval);
+	if(*retval == 1)
+	{
+		printf("finished reading file.\n");
+		return 1;
+	}
+	return -1;
 }
+
+
 int createNewConnection(struct connection* conn)
 {
 	struct sockaddr_in sockAddr;
@@ -236,17 +430,14 @@ int createNewConnection(struct connection* conn)
 	printf("Client IP:%s Port:%d\n", conn->clientIp, conn->clientPort);
 
 	bzero(&sockAddr, sizeof(sockAddr));
-        sockAddr.sin_family = AF_INET;  
+        bzero(buf, sizeof(buf));
+	sockAddr.sin_family = AF_INET;  
         sockAddr.sin_port = htons(conn->serverPort);
-        if((n=inet_pton(AF_INET, conn->serverIp, &sockAddr.sin_addr))!=1)
-        {
-                printf("error createNewConnection:inet_pton() errno:%d\n", errno);
-                return -1;
-        }       
+	inet_pton(AF_INET, conn->serverIp, &sockAddr.sin_addr);
 
 	if((n = connect(sockfd,(SA *)&sockAddr, sizeof(sockAddr))) == -1)
         {
-                printf("error createNewConnection:connect() errno:%d\n", errno);
+                printf("error createNewConnection:connect() errno:%d desc:%s\n", errno, strerror(errno));
                 return -1;
         }
 
@@ -269,15 +460,14 @@ int main(int argc, char* argv)
 {
 	int i, n, numInterfaces;
 	struct bind_info* interfaces;  
-        char *serverIp;
-        int serverPort;
         char    buff[MAXLINE];        
 
-        readConfig(&serverIp, &serverPort);
+	clientConfig = (struct client_config_t*) malloc(sizeof(struct client_config_t));
+        readConfig();
 	                
 #ifdef DEBUG
-        printf("Server Ip:%s\n", serverIp);
-        printf("Port:%d\n", serverPort);
+        printf("Server Ip:%s\n", clientConfig->serverIp);
+        printf("Port:%d\n", clientConfig->serverPort);
 #endif 
  
         getInterfaces(&interfaces, &numInterfaces);
@@ -290,16 +480,27 @@ int main(int argc, char* argv)
 	}
 
 	struct connection* conn = (struct connection*) malloc(sizeof(struct connection));
-	inet_ntop(AF_INET, &((struct sockaddr_in *)(interfaces[0].bind_ipaddr))->sin_addr, conn->clientIp, sizeof(conn->clientIp));
-	strcpy(conn->serverIp, serverIp);
-	conn->serverPort = serverPort;	
+	inet_ntop(AF_INET, &((struct sockaddr_in *)(interfaces[1].bind_ipaddr))->sin_addr, conn->clientIp, sizeof(conn->clientIp));
+	strcpy(conn->serverIp, clientConfig->serverIp);
+	conn->serverPort = clientConfig->serverPort;	
+	conn->seq = clientConfig->seed;
+	strcpy(conn->fileName, clientConfig->fileName);
+
+	queueCapacity = clientConfig->winSize;
+	queueSize = clientConfig->winSize;
 
 	if(createNewConnection(conn)==-1)
 		err_quit("Unable to connect to server.\n");
 
+	queue = (struct packet_t*) malloc(clientConfig->winSize * sizeof(struct packet_t));
+	bzero(queue, sizeof(clientConfig->winSize * sizeof(struct packet_t)));
+
+	pthread_mutex_init(&queMutex, NULL);
+
 	printf("Requesting rebound port.\n");	
-	if((n=requestRebind(conn)) == -1)
+	if(requestRebind(conn) == -1)
 		err_quit("Unable to request rebind port from server.\n");
 	
-	recvFile(conn, n);
+	if(recvFile(conn) == -1)
+		err_quit("Unable to read file from server.\n");
 }

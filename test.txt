@@ -4,5 +4,4 @@ mechanisms.The second item above is much more of a challenge to implement than t
 can be worked on separately at first and then integrated together at a later stage.Apart from the material in Chapters 8, 14 & 22 (especially Sections 22.5 - 22.7), and the 
 experience you gained from the preceding assignment, you will also need to refer to the following :ioctl function (Chapter 17).get_ifi_info function (Section 17.6, Chapter 
 17). This function will be used by the server code to discover its node’s network interfaces so that it can bind all its interface IP addresses (see Section 22.6).‘Rac 
-conditions (Section 20.5, Chapter 20)
-
+conditions (Section 20.5, Chapter 20);

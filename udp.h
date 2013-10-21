@@ -9,12 +9,13 @@
 struct packet_t{
         int msgType;
         uint32_t seq;
+	uint32_t ws;
 	uint32_t ts;
 	char msg[512];
 };
 
 struct connection{
-	int pid;
+	pid_t pid;
 	int sockfd;
 	char clientIp[INET_ADDRSTRLEN];
 	int clientPort;
@@ -28,5 +29,21 @@ struct connection{
 
 
 struct connection* connections;
+
 int udp_recv(int sockfd, struct packet_t* packet, struct sockaddr* sockAddr);
 int udp_send(int sockfd, struct packet_t* packet, struct sockaddr* sockAddr);
+
+//queue related variables and functions
+/*
+int head;
+int tail;
+int queueCapacity, queueSize;
+packet_t* queue;
+pthread_mutex_t queMutex;
+*/
+/*
+int enQueue(struct packet_t* packet);
+int peekQueueTail(struct packet_t* packet);
+int peekQueueHead(struct packet_t* packet);
+int deQueue(struct packet_t* packet);
+*/
