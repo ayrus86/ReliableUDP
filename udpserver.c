@@ -203,7 +203,16 @@ int sendFile(struct connection* conn)
 	FILE *fp = fopen(conn->fileName, "r");	
 	fd_set  rset;
         FD_ZERO(&rset);
-	
+
+	while(!feof(fp) && peekQueueHead(packet)!=-1)
+        {
+        	bzero(packet->msg, sizeof(packet->msg));
+                packet->msgType = MSG_DATA; 
+                packet->seq = conn->seq++;
+                fgets(packet->msg,512,fp);
+                enQueue(packet);
+        }
+	/*
 	while(!feof(fp))
         {
         	bzero(packet->msg, sizeof(packet->msg));
@@ -213,9 +222,9 @@ int sendFile(struct connection* conn)
 		if(enQueue(packet) == -1)
 			break;
 		conn->seq++;
-        }
+        }*/
 
-        bzero(packet->msg, sizeof(packet->msg));
+        bzero(packet, sizeof(packet));
 	if(peekQueueTail(packet)==-1)
 	{
 		printf("Nothing to send.\n");
@@ -227,7 +236,6 @@ int sendFile(struct connection* conn)
 	{
         	timeout.tv_sec = 5;
 	        timeout.tv_usec = 0;
-		printf("sending file seq:%d MSG_TYPE:%d\n", packet->seq, packet->msgType);
 		udp_send(conn->sockfd, packet, NULL);
 		FD_SET(conn->sockfd, &rset);
                 if (select(conn->sockfd+1, &rset, NULL, NULL, &timeout) < 0)
@@ -246,46 +254,54 @@ int sendFile(struct connection* conn)
                         {
 				struct packet_t* recvPacket = (struct packet_t*)malloc(sizeof(struct packet_t));
                                 struct sockaddr_in sockAddr;
-                                if(udp_recv(conn->sockfd, recvPacket, (SA*) &sockAddr) == 1)
+                                bzero(&sockAddr, sizeof(struct sockaddr_in));
+				struct packet_t tempPacket;
+				bzero(&tempPacket, sizeof(struct packet_t));
+				if(udp_recv(conn->sockfd, recvPacket, (SA*) &sockAddr) == 1)
                                 {
-					if(recvPacket->msgType == MSG_ACK && recvPacket->seq >= queue[tail].seq+1)
+					if(recvPacket->msgType == MSG_ACK && peekQueueTail(&tempPacket)!= -1 && recvPacket->seq >= tempPacket.seq+1)
                                         {
-						while(peekQueueTail(packet) != -1 && recvPacket->seq > packet->seq)
-							deQueue(packet);
+						while(peekQueueTail(&tempPacket) != -1 && recvPacket->seq > tempPacket.seq)
+							deQueue(&tempPacket);
 						
-						while(!feof(fp))
+						while(!feof(fp) && peekQueueHead(&tempPacket)!=-1)
         					{
-                					bzero(packet->msg, sizeof(packet->msg));
-							packet->msgType = MSG_DATA;
-                					packet->seq = conn->seq;
-                					fgets(packet->msg,512,fp);
-                					if(enQueue(packet) == -1)
-                        					break;
-                					conn->seq++;
-
+                					bzero(&tempPacket, sizeof(struct packet_t));
+							tempPacket.msgType = MSG_DATA;
+                					tempPacket.seq = conn->seq++;
+                					fgets(tempPacket.msg,512,fp);
+							enQueue(&tempPacket);
         					}
 						
 						
-						if(peekQueueTail(packet)==-1)
+						//if(eof!=1 && peekQueueHead(packet)!= -1 && peekQueueTail(packet)== -1)
+						if(eof!=1 && peekQueueTail(packet)== -1 && peekQueueHead(&tempPacket)!=-1)
         					{
-							printf("sending eof.\n");
-							bzero(packet->msg, sizeof(packet->msg));
+							printf("Finished Reading file. Sending EOF. Seq:%d\n", conn->seq);
+							bzero(packet, sizeof(packet));
                                                         packet->msgType = MSG_EOF;
-                                                        packet->seq = conn->seq;
+							packet->ts = recvPacket->ts;
+                                                        packet->seq = conn->seq++;
 							enQueue(packet);
                                                         eof = 1;
 							continue;
         					}
+						printf("Sending data Seq:%d msg:%s\n", packet->seq, packet->msg);
+						packet->ts = recvPacket->ts;
 					}
 					else if(recvPacket->msgType == MSG_EOF && eof == 1 && queue[tail].seq+1)
 						break;
 				} 	
 			}
+			else
+			{
+				printf("sendFile: timeout. Resending Seq:%d msgType:%d\n", packet->seq, packet->msgType);
+			}
 		}
 		
 	}
 	fclose(fp);
-	printf("successfully finished sending file.\n");
+	printf("Successfully finished sending file.\n");
 }
 
 int sendRebindPort(int sockfd, struct sockaddr* sockAddr, struct connection* conn)

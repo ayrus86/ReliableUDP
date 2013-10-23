@@ -5,3 +5,13 @@ can be worked on separately at first and then integrated together at a later sta
 experience you gained from the preceding assignment, you will also need to refer to the following :ioctl function (Chapter 17).get_ifi_info function (Section 17.6, Chapter 
 17). This function will be used by the server code to discover its node’s network interfaces so that it can bind all its interface IP addresses (see Section 22.6).‘Rac 
 conditions (Section 20.5, Chapter 20);
+The mechanisms you are to implement are based on TCP Reno. These include :
+
+Reliable data transmission using ARQ sliding-windows, with Fast Retransmit.
+Flow control via receiver window advertisements.
+Congestion control that implements :
+SlowStart
+Congestion Avoidance (‘Additive-Increase/Multiplicative Decrease’ – AIMD)
+Fast Recovery (but without the window-inflation aspect of Fast Recovery)
+Only some, and by no means all, of the details for these are covered below. The rest will be presented in class, especially those concerning flow control and TCP Reno’s 
+congestion control mechanisms in general :  Slow Start, Congestion Avoidance, Fast Retransmit and Fast Recovery.

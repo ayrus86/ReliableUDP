@@ -1,11 +1,9 @@
-#include "udp.h"
-#include    "unprtt.h"
-#include    <setjmp.h>
+#include "udp.h" 
+#include "unprtt.h" 
+#include <setjmp.h>
 
 #define RTT_DEBUG
 
-static struct rtt_info rttinfo;
-static int rttinit = 0;
 static void sig_alrm(int signo);
 static sigjmp_buf jmpbuf;
 
@@ -18,6 +16,7 @@ static void sig_alrm(int signo)
 int udp_recv(int sockfd, struct packet_t* packet, struct sockaddr* sockAddr)
 {
 	int len = sizeof(*sockAddr);
+	bzero(sockAddr, len);
 	if(recvfrom(sockfd, packet, sizeof(*packet), 0, sockAddr, &len) != -1)
 	{
 		return 1;
@@ -73,12 +72,12 @@ int peekQueueTail(struct packet_t* packet)
 int peekQueueHead(struct packet_t* packet)
 {
 	pthread_mutex_lock(&queMutex);
-/*        if(queueCapacity == queueSize)
+        if(queueCapacity == 0)
         {
 		pthread_mutex_unlock(&queMutex);
 	        return -1;
 	}
-*/       
+       
         memcpy(packet, &queue[head], sizeof(struct packet_t));
         pthread_mutex_unlock(&queMutex);
 	return 1;
@@ -90,6 +89,7 @@ int enQueue(struct packet_t* packet)
         int n;
         if(queueCapacity == 0)
         {
+//		printf("queue locked. head:%d tail:%d\n", head, tail);
 		pthread_mutex_unlock(&queMutex);
 	        return -1;
         }
@@ -106,7 +106,7 @@ int enQueue(struct packet_t* packet)
                 memcpy(&queue[head], packet, sizeof(struct packet_t));
                 queueCapacity--;
                 
-                while(head!=tail && queue[(head+1)%queueSize].seq!=0)
+                while((head+1)%queueSize!=tail && queue[(head+1)%queueSize].seq!=0)
                 {
                         head = (head+1)%queueSize;
                         queueCapacity--;

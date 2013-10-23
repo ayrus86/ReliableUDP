@@ -27,6 +27,7 @@ void rtt_init(struct rtt_info *ptr)
 	ptr->rtt_srtt = 0;
 	ptr->rtt_rttvar = 0;
 	ptr->rtt_rto = rtt_minmax(ptr->rtt_rto); /* first RTO at (srtt + (4 * rttvar)) = 3 seconds */
+	printf("in rtt_init(). rtt_rto:%d\n", ptr->rtt_rto);
 }
 
 uint32_t rtt_ts(struct rtt_info *ptr)
@@ -34,7 +35,7 @@ uint32_t rtt_ts(struct rtt_info *ptr)
 	uint32_t ts;
 	struct timeval tv;
 	Gettimeofday(&tv, NULL);
-	ts = ((tv.tv_sec - ptr->rtt_base) * 1000) + (tv. tv_usec / 1000);
+	ts = ((tv.tv_sec - ptr->rtt_base) * 1000000) + (tv.tv_usec);
 	return (ts);
 }
 
@@ -45,13 +46,14 @@ void rtt_newpack(struct rtt_info *ptr)
 
 int rtt_start(struct rtt_info *ptr)
 {
-	return ((int) (ptr->rtt_rto + 0.5));    /* round float to int */
+	return  ptr->rtt_rto;
+	//((int) (ptr->rtt_rto + 0.5));    /* round float to int */
 }
 
 
 void rtt_stop(struct rtt_info *ptr, uint32_t ms)
 {
-	ptr->rtt_rtt = ms / 1000; /* measured RTT in seconds */
+	ptr->rtt_rtt = ms; /* measured RTT in microseconds */
 	ptr->rtt_rtt -= (ptr->rtt_srtt>>3);
 	ptr->rtt_srtt += ptr->rtt_rtt;
 	if(ptr->rtt_rtt < 0)
@@ -64,6 +66,7 @@ void rtt_stop(struct rtt_info *ptr, uint32_t ms)
 int rtt_timeout(struct rtt_info *ptr)
 {
 	ptr->rtt_rto *= 2;          /* next RTO */
+	ptr->rtt_rto = rtt_minmax(ptr->rtt_rto);
 	if (++ptr->rtt_nrexmt > RTT_MAXNREXMT)
 		return (-1);            /* time to give up for this packet */
 	return (0);

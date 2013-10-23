@@ -7,12 +7,9 @@
 
 #define DEBUG 1
 
-static struct rtt_info rttinfo;
-static int rttinit = 0;
-static void sig_alrm(int signo);
-static sigjmp_buf jmpbuf;
-
 struct packet_t* queue;
+struct rtt_info rttinfo;
+int rttinit = 0;
 
 struct client_config_t{
 	char serverIp[INET_ADDRSTRLEN];
@@ -97,10 +94,10 @@ void getInterfaces(struct bind_info** addrInterfaces, int* numInterfaces)
         *addrInterfaces = interfaces;
 }
 
-static void sig_alrm(int signo)
+/*static void sig_alrm(int signo)
 {
         siglongjmp(jmpbuf, 1);
-} 
+} */
 
 int printQueue()
 {
@@ -108,16 +105,21 @@ int printQueue()
 	struct packet_t packet;
 	while(1)
 	{
-		sleep(10);
+		sleep(5);
 		if(deQueue(&packet)!=-1)
 		{
 			if(packet.msgType == MSG_EOF)
 			{
+				printf("read end of file.seq:%d\n", packet.seq);
 				ret = 1;
 				pthread_exit(&ret);
 			}
-			printf("Read from queue:%s\n", packet.msg);
+			printf("Read seq:%d msg:%s\n", packet.seq, packet.msg);
 			bzero(&packet, sizeof(packet));
+		}
+		else
+		{
+			printf("queueCapacity:%d head:%d tail:%d tail->seq:%d head->seq:%d\n", queueCapacity, head, tail, queue[tail].seq, queue[head].seq);
 		}
 	}
 }
@@ -202,25 +204,35 @@ int recvFile(struct connection* conn)
 
 	struct packet_t* packet = (struct packet_t*) malloc(sizeof(struct packet_t));
 	bzero(packet, sizeof(struct packet_t));
+	struct packet_t* recvPacket;
 	
-	if(peekQueueHead(packet)==-1)
-		return -1;	
-	/*
+/*	if(peekQueueHead(packet)==-1)
+		return -1;*/	
+	
 	packet->seq = conn->seq;
 	packet->ws = queueCapacity;
         packet->msgType = MSG_ACK;
-	*/
+	
 
 	int eof = 0;
 	struct timeval timeout;
 	fd_set  rset;
         FD_ZERO(&rset);
-	printf("before select\n");
+	
+	if (rttinit == 0) 
+	{
+		rtt_init(&rttinfo);
+		rttinit = 1;
+		rtt_d_flag = 1;
+	}
+
+ 	rtt_newpack(&rttinfo);
 
 	for(;;)
         {
-	        timeout.tv_sec = 5;
-        	timeout.tv_usec = 0;
+		packet->ts = rtt_ts(&rttinfo);    
+	    	timeout.tv_usec = rtt_start(&rttinfo)/1000000;
+	    	timeout.tv_usec = rtt_start(&rttinfo)%1000000;
                 FD_SET(conn->sockfd, &rset);
                 if (select(conn->sockfd+1, &rset, NULL, NULL, &timeout) < 0)
                 {
@@ -228,7 +240,7 @@ int recvFile(struct connection* conn)
                         	continue;
                         else
                         {
-                                printf("error recvFile:select() errno:%d\n", errno);
+                                printf("error recvFile:select() errno:%s\n", strerror(errno));
                                 return -1;
                         }
                 }
@@ -236,8 +248,7 @@ int recvFile(struct connection* conn)
                 {
 			if (FD_ISSET(conn->sockfd, &rset))
                         {
-                           	printf("in select got a packet\n");
-			        struct packet_t* recvPacket = (struct packet_t*)malloc(sizeof(struct packet_t));
+			        recvPacket = (struct packet_t*)malloc(sizeof(struct packet_t));
                                 struct sockaddr_in sockAddr;
                                 if(udp_recv(conn->sockfd, recvPacket, (SA*) &sockAddr) == 1)
                                 {
@@ -245,42 +256,58 @@ int recvFile(struct connection* conn)
                                         {
 						if(enQueue(recvPacket) != -1)
 						{
+							bzero(packet, sizeof(struct packet_t));
 							packet->seq = queue[head].seq+1;
 							packet->ws = queueCapacity;
+							packet->msgType = MSG_ACK;
+							printf("sending ACK:%d recv->seq:%d\n", packet->seq, recvPacket->seq);
 						}
-						printf("sending ACK:%d\n", packet->seq);
-						//packet->seq = ++conn->seq;
 						free(recvPacket);
-						//printf("sending ack seq:%d\n", conn->seq);
 						udp_send(conn->sockfd, packet, NULL);
 					}
 					else if(recvPacket->seq < queue[head].seq)
+					{
+						free(recvPacket);
 						continue; //received a old duplicate packet. ignore it
+					}
 					else if(recvPacket->msgType == MSG_EOF && recvPacket->seq >= queue[head].seq)
 					{
 						int n = 0;
-						//packet->seq = ++conn->seq;
-						if((eof!= 1 && enQueue(recvPacket)) != -1)
+						if((eof!= 1) && (enQueue(recvPacket) != -1))
                                                 {
-							printf("inside eof if\n");							
+							//printf("inside eof if. recv->seq:%d\n",recvPacket->seq);							
+							bzero(packet, sizeof(struct packet_t));	
 							packet->msgType = MSG_EOF;
+							packet->ws = queueCapacity;
 							packet->seq = queue[head].seq+1;
 							eof = 1;
+							free(recvPacket);
  							udp_send(conn->sockfd, packet, NULL);
 						}
-						udp_send(conn->sockfd, packet, NULL);
 					}
 				}
 			}
 			else
 			{
 				if(eof == 1)
+				{
+					printf("Finished WAIT_TIME. breaking.\n");
 					break;
-				printf("recvFile: timeout. sending ack seq:%d msgType:%d\n", packet->seq, packet->msgType);
+				}
+				if(rtt_timeout(&rttinfo))
+				{
+					rttinit = 0; 	
+					errno = ETIMEDOUT;
+					printf("error recvFile:rtt_timeout(). errno:%s\n",strerror(errno));
+					return -1;
+				}
+				printf("recvFile: timeout. sending ack seq:%d msgType:%d rtt_rto:%d\n", packet->seq, packet->msgType, rttinfo.rtt_rto);
 				udp_send(conn->sockfd, packet, NULL);
 			}
 		}
 	}
+
+	rtt_stop(&rttinfo, (rtt_ts(&rttinfo) - recvPacket->ts)*1000000);
 	free(packet);
 	int* retval;
 	pthread_join(tid, (void *)&retval);
@@ -367,7 +394,7 @@ int main(int argc, char* argv)
 	int i, n, numInterfaces;
 	struct bind_info* interfaces;  
         char    buff[MAXLINE];        
-
+	
 	clientConfig = (struct client_config_t*) malloc(sizeof(struct client_config_t));
         readConfig();
 	                
