@@ -34,16 +34,16 @@ int udp_recv(int sockfd, struct packet_t* packet, struct sockaddr* sockAddr);
 int udp_send(int sockfd, struct packet_t* packet, struct sockaddr* sockAddr);
 
 //queue related variables and functions
-/*
+
 int head;
 int tail;
 int queueCapacity, queueSize;
-packet_t* queue;
+struct packet_t* queue;
 pthread_mutex_t queMutex;
-*/
-/*
+
+
 int enQueue(struct packet_t* packet);
 int peekQueueTail(struct packet_t* packet);
 int peekQueueHead(struct packet_t* packet);
 int deQueue(struct packet_t* packet);
-*/
+

@@ -38,7 +38,7 @@ int udp_send(int sockfd, struct packet_t* packet, struct sockaddr* sockAddr)
         return -1; 
 	
 }
-/*
+
 
 int deQueue(struct packet_t* packet)  
 {
@@ -64,6 +64,7 @@ int peekQueueTail(struct packet_t* packet)
 		pthread_mutex_unlock(&queMutex);
                 return -1;
         }
+
 	memcpy(packet, &queue[tail], sizeof(struct packet_t));
 	pthread_mutex_unlock(&queMutex);
 	return 1;
@@ -72,11 +73,12 @@ int peekQueueTail(struct packet_t* packet)
 int peekQueueHead(struct packet_t* packet)
 {
 	pthread_mutex_lock(&queMutex);
-        if(queueCapacity == queueSize)
+/*        if(queueCapacity == queueSize)
         {
 		pthread_mutex_unlock(&queMutex);
 	        return -1;
-	}       
+	}
+*/       
         memcpy(packet, &queue[head], sizeof(struct packet_t));
         pthread_mutex_unlock(&queMutex);
 	return 1;
@@ -96,7 +98,6 @@ int enQueue(struct packet_t* packet)
                 memcpy(&queue[head], packet, sizeof(struct packet_t));
                 queueCapacity--;
 		pthread_mutex_unlock(&queMutex);
-        	printf("initial head:%d\n", head);
                 return 1;
         }
         else if((n = packet->seq - queue[head].seq) == 1)
@@ -105,14 +106,12 @@ int enQueue(struct packet_t* packet)
                 memcpy(&queue[head], packet, sizeof(struct packet_t));
                 queueCapacity--;
                 
-                while(head!=tail && queue[(head+1)/queueSize].seq!=0)
+                while(head!=tail && queue[(head+1)%queueSize].seq!=0)
                 {
                         head = (head+1)%queueSize;
                         queueCapacity--;
                 }
 		pthread_mutex_unlock(&queMutex);
-        	printf("head:%d\n", head);
-		exit(0);
 		return 1;
         }
         else if(n > 0 && n <= queueCapacity)
@@ -125,4 +124,4 @@ int enQueue(struct packet_t* packet)
 	pthread_mutex_unlock(&queMutex);
         return -1;
 }
-*/
+

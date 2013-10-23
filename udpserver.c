@@ -6,6 +6,14 @@
 
 static struct msghdr msgsend, msgrecv;
 
+
+struct server_config_t{
+        int serverPort;
+        int winSize;
+};
+
+struct server_config_t* serverConfig;
+
 void signalHandler(int signal)
 {                               
         pid_t     pid;
@@ -41,7 +49,7 @@ void signalHandler(int signal)
         return;                  
 }
 
-void readConfig(int* port, int* maxWinSize)
+void readConfig()
 {
         FILE *fp;
 	char line[80];
@@ -52,9 +60,9 @@ void readConfig(int* port, int* maxWinSize)
                 exit(1);
         }
 
-	*port = atoi(fgets(line, 80, fp));
+	serverConfig->serverPort = atoi(fgets(line, 80, fp));
 	memset(line, 0, 80);
-	*maxWinSize = atoi(fgets(line, 80, fp));
+	serverConfig->winSize = atoi(fgets(line, 80, fp));
 	fclose(fp);
 }
 
@@ -184,29 +192,42 @@ int createNewConnection(struct connection* conn)
 
 int sendFile(struct connection* conn)
 {
+	queueCapacity = serverConfig->winSize;
+        queueSize = serverConfig->winSize;
+	queue = (struct packet_t*) malloc(serverConfig->winSize * sizeof(struct packet_t));
+	bzero(queue, sizeof(serverConfig->winSize * sizeof(struct packet_t)));
+	
 	struct packet_t* packet = (struct packet_t*) malloc(sizeof(struct packet_t));
-        bzero(packet, sizeof(struct packet_t));
-	packet->seq = conn->seq;
-        packet->msgType = MSG_DATA;
 	struct timeval timeout;
 
 	FILE *fp = fopen(conn->fileName, "r");	
 	fd_set  rset;
         FD_ZERO(&rset);
-
-	if(!feof(fp))
+	
+	while(!feof(fp))
         {
         	bzero(packet->msg, sizeof(packet->msg));
-                fgets(packet->msg,512,fp);
+                packet->msgType = MSG_DATA;
+		packet->seq = conn->seq;
+		fgets(packet->msg,512,fp);
+		if(enQueue(packet) == -1)
+			break;
+		conn->seq++;
         }
 
+        bzero(packet->msg, sizeof(packet->msg));
+	if(peekQueueTail(packet)==-1)
+	{
+		printf("Nothing to send.\n");
+                return 1;
+	}
 	int eof = 0;
 
 	for(;;)
 	{
         	timeout.tv_sec = 5;
 	        timeout.tv_usec = 0;
-		printf("sending file seq:%d\n", conn->seq);
+		printf("sending file seq:%d MSG_TYPE:%d\n", packet->seq, packet->msgType);
 		udp_send(conn->sockfd, packet, NULL);
 		FD_SET(conn->sockfd, &rset);
                 if (select(conn->sockfd+1, &rset, NULL, NULL, &timeout) < 0)
@@ -227,26 +248,36 @@ int sendFile(struct connection* conn)
                                 struct sockaddr_in sockAddr;
                                 if(udp_recv(conn->sockfd, recvPacket, (SA*) &sockAddr) == 1)
                                 {
-					if(recvPacket->msgType == MSG_ACK && recvPacket->seq == conn->seq+1)
+					if(recvPacket->msgType == MSG_ACK && recvPacket->seq >= queue[tail].seq+1)
                                         {
-						conn->seq = recvPacket->seq;
-						if(!feof(fp))
-        					{        
+						while(peekQueueTail(packet) != -1 && recvPacket->seq > packet->seq)
+							deQueue(packet);
+						
+						while(!feof(fp))
+        					{
                 					bzero(packet->msg, sizeof(packet->msg));
+							packet->msgType = MSG_DATA;
+                					packet->seq = conn->seq;
                 					fgets(packet->msg,512,fp);
-							packet->seq = conn->seq;
-        					}        
-        					else if(eof == 0)
-						{
+                					if(enQueue(packet) == -1)
+                        					break;
+                					conn->seq++;
+
+        					}
+						
+						
+						if(peekQueueTail(packet)==-1)
+        					{
+							printf("sending eof.\n");
 							bzero(packet->msg, sizeof(packet->msg));
-							packet->msgType = MSG_EOF;
-							packet->seq = conn->seq;
-							eof = 1;
-						}
-						else
-							break;
+                                                        packet->msgType = MSG_EOF;
+                                                        packet->seq = conn->seq;
+							enQueue(packet);
+                                                        eof = 1;
+							continue;
+        					}
 					}
-					else if(recvPacket->msgType == MSG_EOF && recvPacket->seq == conn->seq)
+					else if(recvPacket->msgType == MSG_EOF && eof == 1 && queue[tail].seq+1)
 						break;
 				} 	
 			}
@@ -314,16 +345,13 @@ int sendRebindPort(int sockfd, struct sockaddr* sockAddr, struct connection* con
 
 int main(int argc, char* argv)
 {
-	int port;
-	int maxWinSize;
-
-
-	readConfig(&port, &maxWinSize);
-
+	serverConfig = (struct server_config_t*) malloc(sizeof(struct server_config_t));
+	readConfig();
+	
 
 #ifdef DEBUG
-	printf("Port:%d\n", port);
-	printf("maxWinSize:%d\n", maxWinSize);
+	printf("Port:%d\n", serverConfig->serverPort);
+	printf("maxWinSize:%d\n", serverConfig->winSize);
 #endif
 
 	int sockfd;
@@ -356,7 +384,7 @@ int main(int argc, char* argv)
 
 		sa = (struct sockaddr_in *) interfaces[i].bind_ipaddr;	
                 sa->sin_family = AF_INET;
-                sa->sin_port = htons(port);
+                sa->sin_port = htons(serverConfig->serverPort);
 
 		if((n = bind(sockfd, (SA *) sa, sizeof(*sa))) == -1)
 			err_quit("error bind() errno:%d\n", errno);

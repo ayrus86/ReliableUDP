@@ -26,98 +26,6 @@ struct client_config_t{
 
 struct client_config_t* clientConfig;
 
- int head;
-int tail;
-int queueCapacity;
-int queueSize;
-struct packet_t* queue;
-pthread_mutex_t queMutex;
-
-int deQueue(struct packet_t* packet)
-{
-        pthread_mutex_lock(&queMutex);
-        if(queueCapacity == queueSize) //read everything nothing to read;
-        {
-                pthread_mutex_unlock(&queMutex);
-                return -1;
-        }
-        memcpy(packet, &queue[tail], sizeof(struct packet_t));
-        bzero(&queue[tail], sizeof(struct packet_t));
-        queueCapacity++;
-        tail = (tail+1) % queueSize;
-        pthread_mutex_unlock(&queMutex);
-        return 1;
-}
-        
-int peekQueueTail(struct packet_t* packet)
-{
-        pthread_mutex_lock(&queMutex);
-/*        if(queueCapacity == queueSize)
-        {
-                pthread_mutex_unlock(&queMutex);
-                return -1;
-        }*/
-        memcpy(packet, &queue[tail], sizeof(struct packet_t));
-        pthread_mutex_unlock(&queMutex);
-        return 1;
-}
-
-int peekQueueHead(struct packet_t* packet)
-{
-        pthread_mutex_lock(&queMutex);
-/*        if(queueCapacity == queueSize)
-        {
-                pthread_mutex_unlock(&queMutex);
-                return -1;
-        }*/       
-        memcpy(packet, &queue[head], sizeof(struct packet_t));
-        pthread_mutex_unlock(&queMutex);
-        return 1;
-}
-
-int enQueue(struct packet_t* packet)
-{
-        pthread_mutex_lock(&queMutex);
-        int n;
-        if(queueCapacity == 0)
-        {
-                pthread_mutex_unlock(&queMutex);
-                return -1;
-        }
-        if(queueCapacity == queueSize)
-        {
-                memcpy(&queue[head], packet, sizeof(struct packet_t));
-                queueCapacity--;
-                pthread_mutex_unlock(&queMutex);
-                printf("initial head:%d pid:%d\n", head, getpid());
-                return 1; 
-        }
-        else if((n = packet->seq - queue[head].seq) == 1)
-        {
-                head = (head+1) % queueSize;
-		memcpy(&queue[head], packet, sizeof(struct packet_t));
-                queueCapacity--;
-                printf("head:%d queueSize:%d pid:%d\n", head, queueSize, getpid());
-                
-               /* while(head!=tail && queue[(head+1)/queueSize].seq!=0)
-                {       
-                        head = (head+1)%queueSize;
-                        queueCapacity--;
-                }*/
-                pthread_mutex_unlock(&queMutex);
-                return 1;
-        }
-        else if(n > 0 && n <= queueCapacity)
-        {       
-                memcpy(&queue[(head+n)%queueSize], packet, sizeof(struct packet_t));
-                pthread_mutex_unlock(&queMutex);
-                return -1;
-        }
-        
-        pthread_mutex_unlock(&queMutex);
-        return -1;
-}
-
 void readConfig()
 {
         FILE *fp;
@@ -352,25 +260,23 @@ int recvFile(struct connection* conn)
 					{
 						int n = 0;
 						//packet->seq = ++conn->seq;
-						if((n = enQueue(recvPacket)) != -1)
+						if((eof!= 1 && enQueue(recvPacket)) != -1)
                                                 {
-							
 							printf("inside eof if\n");							
 							packet->msgType = MSG_EOF;
-							packet->seq = queue[head].seq;
+							packet->seq = queue[head].seq+1;
+							eof = 1;
  							udp_send(conn->sockfd, packet, NULL);
 						}
-						else if(n == -1)
-						{
-							printf("inside eof else\n");					
-							break;
-						};
+						udp_send(conn->sockfd, packet, NULL);
 					}
 				}
 			}
 			else
 			{
-				printf("recvFile: timeout. sending ack n:%d\n", conn->seq);
+				if(eof == 1)
+					break;
+				printf("recvFile: timeout. sending ack seq:%d msgType:%d\n", packet->seq, packet->msgType);
 				udp_send(conn->sockfd, packet, NULL);
 			}
 		}
