@@ -238,10 +238,12 @@ int sendFile(struct connection* conn)
 	
 	for(;;)
 	{
+
+		udp_send(conn->sockfd, packet, NULL);
+sendagain:
 		packet->ts = rtt_ts(&rttinfo);
 		timeout.tv_usec = rtt_start(&rttinfo)/1000000;
                 timeout.tv_usec = rtt_start(&rttinfo)%1000000;
-		udp_send(conn->sockfd, packet, NULL);
 		FD_SET(conn->sockfd, &rset);
                 if (select(conn->sockfd+1, &rset, NULL, NULL, &timeout) < 0)
                 {
@@ -267,7 +269,11 @@ int sendFile(struct connection* conn)
 					if(recvPacket->msgType == MSG_ACK && peekQueueTail(&tempPacket)!= -1 && recvPacket->seq >= tempPacket.seq+1)
                                         {
 						while(peekQueueTail(&tempPacket) != -1 && recvPacket->seq > tempPacket.seq)
+						{
+							if(tail == sentIndex)
+								sentIndex = -1;
 							deQueue(&tempPacket);
+						}
 						
 						while(!feof(fp) && peekQueueHead(&tempPacket)!=-1)
         					{
@@ -283,30 +289,38 @@ int sendFile(struct connection* conn)
 							printf("Finished Reading file. Sending EOF. Seq:%d\n", conn->seq);
 							bzero(packet, sizeof(packet));
                                                         packet->msgType = MSG_EOF;
-							//packet->ts = recvPacket->ts;
                                                         packet->seq = conn->seq++;
+							rtt_newpack(&rttinfo);
+							rtt_init(&rttinfo);
 							enQueue(packet);
                                                         eof = 1;
 							continue;
         					}
 						else
 						{
-						/*	if(eof!=1)
+							if(eof!=1)
 							{
-								int i, k;
-								k = tail + 
-                                                		for(i = tail, k = recvPacket->ws; i != head && k>=0 ; i = (i+1)%queueSize, k--)
+								rtt_newpack(&rttinfo);
+								rtt_init(&rttinfo);
+								int reqPaks, i;
+								sentIndex = (sentIndex == -1)? tail : sentIndex;									
+								reqPaks = recvPacket->ws <= (queueSize-queueCapacity) ? recvPacket->ws : queueSize-queueCapacity;
+								reqPaks = tail+reqPaks-1;
+								
+								
+								if(reqPaks<=0 || reqPaks <= sentIndex)
+									goto sendagain;
+
+								for(i = sentIndex; i <= reqPaks ; i++)
                                                 		{
                                                         		bzero(&tempPacket, sizeof(struct packet_t));
-                                                        		memcpy(&tempPacket, &queue[i], sizeof(struct packet_t));
-                                                        		//printf("Sending data Seq:%d msg:%s\n", tempPacket.seq, tempPacket.msg);
+                                                        		memcpy(&tempPacket, &queue[i%queueSize], sizeof(struct packet_t));
+                                                        		printf("Window data Seq:%d\n", tempPacket.seq);
                                                         		udp_send(conn->sockfd, &tempPacket, NULL);
                                                 		}
-							}*/
+								sentIndex = reqPaks%queueSize;
+							}
 						}
-						rtt_newpack(&rttinfo);
-						rtt_init(&rttinfo);
-						//printf("Sending data Seq:%d msg:%s\n", packet->seq, packet->msg);
 					}
 					else if(recvPacket->msgType == MSG_EOF && eof == 1 && queue[tail].seq+1)
 						break;

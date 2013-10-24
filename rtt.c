@@ -28,7 +28,6 @@ void rtt_init(struct rtt_info *ptr)
 	ptr->rtt_rttvar = 0;
 	ptr->rtt_rto = 0;
 	ptr->rtt_rto = rtt_minmax(ptr->rtt_rto); /* first RTO at (srtt + (4 * rttvar)) = 3 seconds */
-	printf("in rtt_init(). rtt_rto:%d\n", ptr->rtt_rto);
 }
 
 uint32_t rtt_ts(struct rtt_info *ptr)

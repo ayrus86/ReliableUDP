@@ -219,6 +219,8 @@ int recvFile(struct connection* conn)
 	
 	for(;;)
         {
+
+sendagain:
 	    	timeout.tv_usec = 5;
                 FD_SET(conn->sockfd, &rset);
                 if (select(conn->sockfd+1, &rset, NULL, NULL, &timeout) < 0)
@@ -239,21 +241,13 @@ int recvFile(struct connection* conn)
                                 struct sockaddr_in sockAddr;
                                 if(udp_recv(conn->sockfd, recvPacket, (SA*) &sockAddr) == 1)
                                 {
-					/*srand(clientConfig->seed);	
-					clientConfig->seed = rand();
-					if(clientConfig->lossProb > ((double) clientConfig->seed/(double)RAND_MAX))
-                                        {
-						printf("dropping packet seq:%d msgType:%d\n", recvPacket->seq, recvPacket->msgType);
-						continue;
-					}*/
-
 					if(recvPacket->msgType == MSG_DATA && recvPacket->seq >= packet->seq)
                                         {
 						
 						if(clientConfig->lossProb > ((double) drand48())) //(double)RAND_MAX))
                                         	{
                                                 	printf("dropping packet seq:%d msgType:%d\n", recvPacket->seq, recvPacket->msgType);
-                                                	continue;
+                                                	goto sendagain;
                                         	}
 						
 						if(enQueue(recvPacket) != -1)
@@ -263,7 +257,7 @@ int recvFile(struct connection* conn)
 							packet->ws = queueCapacity;
 							packet->ts = recvPacket->ts;
 							packet->msgType = MSG_ACK;
-							printf("sending ACK:%d recv->seq:%d\n", packet->seq, recvPacket->seq);
+							printf("sending ACK:%d recv->seq:%d ws:%d\n", packet->seq, recvPacket->seq, packet->ws);
 						}
 						free(recvPacket);
 						udp_send(conn->sockfd, packet, NULL);
