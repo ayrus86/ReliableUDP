@@ -7,10 +7,6 @@
 
 #define DEBUG 1
 
-struct packet_t* queue;
-struct rtt_info rttinfo;
-int rttinit = 0;
-
 struct client_config_t{
 	char serverIp[INET_ADDRSTRLEN];
 	int serverPort;
@@ -219,20 +215,9 @@ int recvFile(struct connection* conn)
 	fd_set  rset;
         FD_ZERO(&rset);
 	
-	if (rttinit == 0) 
-	{
-		rtt_init(&rttinfo);
-		rttinit = 1;
-		rtt_d_flag = 1;
-	}
-
- 	rtt_newpack(&rttinfo);
-
 	for(;;)
         {
-		packet->ts = rtt_ts(&rttinfo);    
-	    	timeout.tv_usec = rtt_start(&rttinfo)/1000000;
-	    	timeout.tv_usec = rtt_start(&rttinfo)%1000000;
+	    	timeout.tv_usec = 5;
                 FD_SET(conn->sockfd, &rset);
                 if (select(conn->sockfd+1, &rset, NULL, NULL, &timeout) < 0)
                 {
@@ -259,6 +244,7 @@ int recvFile(struct connection* conn)
 							bzero(packet, sizeof(struct packet_t));
 							packet->seq = queue[head].seq+1;
 							packet->ws = queueCapacity;
+							packet->ts = recvPacket->ts;
 							packet->msgType = MSG_ACK;
 							printf("sending ACK:%d recv->seq:%d\n", packet->seq, recvPacket->seq);
 						}
@@ -279,6 +265,7 @@ int recvFile(struct connection* conn)
 							bzero(packet, sizeof(struct packet_t));	
 							packet->msgType = MSG_EOF;
 							packet->ws = queueCapacity;
+							packet->ts = recvPacket->ts;
 							packet->seq = queue[head].seq+1;
 							eof = 1;
 							free(recvPacket);
@@ -294,20 +281,12 @@ int recvFile(struct connection* conn)
 					printf("Finished WAIT_TIME. breaking.\n");
 					break;
 				}
-				if(rtt_timeout(&rttinfo))
-				{
-					rttinit = 0; 	
-					errno = ETIMEDOUT;
-					printf("error recvFile:rtt_timeout(). errno:%s\n",strerror(errno));
-					return -1;
-				}
-				printf("recvFile: timeout. sending ack seq:%d msgType:%d rtt_rto:%d\n", packet->seq, packet->msgType, rttinfo.rtt_rto);
+				printf("recvFile: timeout. sending ack seq:%d msgType:%d\n", packet->seq, packet->msgType);
 				udp_send(conn->sockfd, packet, NULL);
 			}
 		}
 	}
 
-	rtt_stop(&rttinfo, (rtt_ts(&rttinfo) - recvPacket->ts)*1000000);
 	free(packet);
 	int* retval;
 	pthread_join(tid, (void *)&retval);

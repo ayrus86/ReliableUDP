@@ -2,8 +2,9 @@
 #include "unpifiplus.h"
 #include "udp.h"
 #include "unprtt.h"
-#define DEBUG 1
 
+#define DEBUG 1
+#define MIN(a,b) (a<b? a :b )
 static struct msghdr msgsend, msgrecv;
 
 
@@ -13,6 +14,10 @@ struct server_config_t{
 };
 
 struct server_config_t* serverConfig;
+
+struct packet_t* queue;
+struct rtt_info rttinfo;
+int rttinit = 0;
 
 void signalHandler(int signal)
 {                               
@@ -199,6 +204,7 @@ int sendFile(struct connection* conn)
 	
 	struct packet_t* packet = (struct packet_t*) malloc(sizeof(struct packet_t));
 	struct timeval timeout;
+	struct packet_t* recvPacket;
 
 	FILE *fp = fopen(conn->fileName, "r");	
 	fd_set  rset;
@@ -212,17 +218,6 @@ int sendFile(struct connection* conn)
                 fgets(packet->msg,512,fp);
                 enQueue(packet);
         }
-	/*
-	while(!feof(fp))
-        {
-        	bzero(packet->msg, sizeof(packet->msg));
-                packet->msgType = MSG_DATA;
-		packet->seq = conn->seq;
-		fgets(packet->msg,512,fp);
-		if(enQueue(packet) == -1)
-			break;
-		conn->seq++;
-        }*/
 
         bzero(packet, sizeof(packet));
 	if(peekQueueTail(packet)==-1)
@@ -232,10 +227,20 @@ int sendFile(struct connection* conn)
 	}
 	int eof = 0;
 
+	if (rttinit == 0)
+        {
+                rtt_init(&rttinfo);
+                rttinit = 1;
+                rtt_d_flag = 1;
+        }
+        
+        rtt_newpack(&rttinfo);
+	
 	for(;;)
 	{
-        	timeout.tv_sec = 5;
-	        timeout.tv_usec = 0;
+		packet->ts = rtt_ts(&rttinfo);
+		timeout.tv_usec = rtt_start(&rttinfo)/1000000;
+                timeout.tv_usec = rtt_start(&rttinfo)%1000000;
 		udp_send(conn->sockfd, packet, NULL);
 		FD_SET(conn->sockfd, &rset);
                 if (select(conn->sockfd+1, &rset, NULL, NULL, &timeout) < 0)
@@ -252,7 +257,7 @@ int sendFile(struct connection* conn)
                 {
                         if (FD_ISSET(conn->sockfd, &rset))
                         {
-				struct packet_t* recvPacket = (struct packet_t*)malloc(sizeof(struct packet_t));
+				recvPacket = (struct packet_t*)malloc(sizeof(struct packet_t));
                                 struct sockaddr_in sockAddr;
                                 bzero(&sockAddr, sizeof(struct sockaddr_in));
 				struct packet_t tempPacket;
@@ -272,22 +277,28 @@ int sendFile(struct connection* conn)
                 					fgets(tempPacket.msg,512,fp);
 							enQueue(&tempPacket);
         					}
-						
-						
-						//if(eof!=1 && peekQueueHead(packet)!= -1 && peekQueueTail(packet)== -1)
+
+						int i, k;
+						for(i = tail, k = recvPacket->ws; i != head && k>=0 ; i = (i+1)%queueSize, k--)
+						{
+							bzero(&tempPacket, sizeof(struct packet_t));
+							memcpy(&tempPacket, &queue[i], sizeof(struct packet_t));
+							printf("Sending data Seq:%d msg:%s\n", tempPacket.seq, tempPacket.msg);
+							udp_send(conn->sockfd, &tempPacket, NULL);
+						}
+												
 						if(eof!=1 && peekQueueTail(packet)== -1 && peekQueueHead(&tempPacket)!=-1)
         					{
 							printf("Finished Reading file. Sending EOF. Seq:%d\n", conn->seq);
 							bzero(packet, sizeof(packet));
                                                         packet->msgType = MSG_EOF;
-							packet->ts = recvPacket->ts;
+							//packet->ts = recvPacket->ts;
                                                         packet->seq = conn->seq++;
 							enQueue(packet);
                                                         eof = 1;
 							continue;
         					}
-						printf("Sending data Seq:%d msg:%s\n", packet->seq, packet->msg);
-						packet->ts = recvPacket->ts;
+						//printf("Sending data Seq:%d msg:%s\n", packet->seq, packet->msg);
 					}
 					else if(recvPacket->msgType == MSG_EOF && eof == 1 && queue[tail].seq+1)
 						break;
@@ -295,11 +306,20 @@ int sendFile(struct connection* conn)
 			}
 			else
 			{
-				printf("sendFile: timeout. Resending Seq:%d msgType:%d\n", packet->seq, packet->msgType);
+				if(rtt_timeout(&rttinfo))
+                                {
+                                        rttinit = 0;
+                                        errno = ETIMEDOUT;
+                                        printf("error recvFile:rtt_timeout(). errno:%s\n",strerror(errno));
+                                        return -1;
+                                }
+				printf("sendFile: timeout. Resending Seq:%d msgType:%d rtt_rto:%d\n", packet->seq, packet->msgType, rttinfo.rtt_rto);
 			}
 		}
 		
 	}
+	rtt_stop(&rttinfo, (rtt_ts(&rttinfo) - recvPacket->ts)*1000000);
+        free(packet);
 	fclose(fp);
 	printf("Successfully finished sending file.\n");
 }
