@@ -2,7 +2,9 @@ CC = gcc
 
 LIBS = -lresolv -lsocket -lnsl -lpthread\
 	/home/courses/cse533/Stevens/unpv13e_solaris2.10/libunp.a\
-	
+
+LDFLAGS=-lm
+
 FLAGS = -g -O2
 
 CFLAGS = ${FLAGS} -I/home/courses/cse533/Stevens/unpv13e_solaris2.10/lib
@@ -10,10 +12,10 @@ CFLAGS = ${FLAGS} -I/home/courses/cse533/Stevens/unpv13e_solaris2.10/lib
 all: client server 
 
 client: udpclient.o get_ifi_info_plus.o udp.o rtt.o
-	${CC} ${FLAGS} -o client udpclient.o udp.o rtt.o get_ifi_info_plus.o ${LIBS}
+	${CC} ${FLAGS} ${LDFLAGS} -o client udpclient.o udp.o rtt.o get_ifi_info_plus.o ${LIBS}
 
 udpclient.o: udpclient.c
-	${CC} ${CFLAGS} -c udpclient.c
+	${CC} ${CFLAGS} ${LDFLAGS} -c udpclient.c
 
 get_ifi_info_plus.o: get_ifi_info_plus.c
 	${CC} ${CFLAGS} -c get_ifi_info_plus.c

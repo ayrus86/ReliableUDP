@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <setjmp.h>
+#include <math.h>
 #include "unp.h"
 #include "udp.h"
 #include "unpifiplus.h"
@@ -13,7 +14,7 @@ struct client_config_t{
 	char fileName[25];
 	int winSize;
 	int seed;
-	float lossProb;
+	double lossProb;
 	int mean;
 };
 
@@ -101,7 +102,7 @@ int printQueue()
 	struct packet_t packet;
 	while(1)
 	{
-		sleep(5);
+		sleep( -1 * clientConfig->mean * log(drand48()));
 		if(deQueue(&packet)!=-1)
 		{
 			if(packet.msgType == MSG_EOF)
@@ -214,6 +215,7 @@ int recvFile(struct connection* conn)
 	struct timeval timeout;
 	fd_set  rset;
         FD_ZERO(&rset);
+	srand(clientConfig->seed);
 	
 	for(;;)
         {
@@ -237,8 +239,23 @@ int recvFile(struct connection* conn)
                                 struct sockaddr_in sockAddr;
                                 if(udp_recv(conn->sockfd, recvPacket, (SA*) &sockAddr) == 1)
                                 {
-                                        if(recvPacket->msgType == MSG_DATA && recvPacket->seq >= packet->seq)
+					/*srand(clientConfig->seed);	
+					clientConfig->seed = rand();
+					if(clientConfig->lossProb > ((double) clientConfig->seed/(double)RAND_MAX))
                                         {
+						printf("dropping packet seq:%d msgType:%d\n", recvPacket->seq, recvPacket->msgType);
+						continue;
+					}*/
+
+					if(recvPacket->msgType == MSG_DATA && recvPacket->seq >= packet->seq)
+                                        {
+						
+						if(clientConfig->lossProb > ((double) drand48())) //(double)RAND_MAX))
+                                        	{
+                                                	printf("dropping packet seq:%d msgType:%d\n", recvPacket->seq, recvPacket->msgType);
+                                                	continue;
+                                        	}
+						
 						if(enQueue(recvPacket) != -1)
 						{
 							bzero(packet, sizeof(struct packet_t));

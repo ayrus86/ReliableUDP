@@ -4,7 +4,6 @@
 #include "unprtt.h"
 
 #define DEBUG 1
-#define MIN(a,b) (a<b? a :b )
 static struct msghdr msgsend, msgrecv;
 
 
@@ -205,10 +204,11 @@ int sendFile(struct connection* conn)
 	struct packet_t* packet = (struct packet_t*) malloc(sizeof(struct packet_t));
 	struct timeval timeout;
 	struct packet_t* recvPacket;
-
+	
 	FILE *fp = fopen(conn->fileName, "r");	
 	fd_set  rset;
         FD_ZERO(&rset);
+	int sentIndex = -1;
 
 	while(!feof(fp) && peekQueueHead(packet)!=-1)
         {
@@ -278,15 +278,6 @@ int sendFile(struct connection* conn)
 							enQueue(&tempPacket);
         					}
 
-						int i, k;
-						for(i = tail, k = recvPacket->ws; i != head && k>=0 ; i = (i+1)%queueSize, k--)
-						{
-							bzero(&tempPacket, sizeof(struct packet_t));
-							memcpy(&tempPacket, &queue[i], sizeof(struct packet_t));
-							printf("Sending data Seq:%d msg:%s\n", tempPacket.seq, tempPacket.msg);
-							udp_send(conn->sockfd, &tempPacket, NULL);
-						}
-												
 						if(eof!=1 && peekQueueTail(packet)== -1 && peekQueueHead(&tempPacket)!=-1)
         					{
 							printf("Finished Reading file. Sending EOF. Seq:%d\n", conn->seq);
@@ -298,6 +289,23 @@ int sendFile(struct connection* conn)
                                                         eof = 1;
 							continue;
         					}
+						else
+						{
+						/*	if(eof!=1)
+							{
+								int i, k;
+								k = tail + 
+                                                		for(i = tail, k = recvPacket->ws; i != head && k>=0 ; i = (i+1)%queueSize, k--)
+                                                		{
+                                                        		bzero(&tempPacket, sizeof(struct packet_t));
+                                                        		memcpy(&tempPacket, &queue[i], sizeof(struct packet_t));
+                                                        		//printf("Sending data Seq:%d msg:%s\n", tempPacket.seq, tempPacket.msg);
+                                                        		udp_send(conn->sockfd, &tempPacket, NULL);
+                                                		}
+							}*/
+						}
+						rtt_newpack(&rttinfo);
+						rtt_init(&rttinfo);
 						//printf("Sending data Seq:%d msg:%s\n", packet->seq, packet->msg);
 					}
 					else if(recvPacket->msgType == MSG_EOF && eof == 1 && queue[tail].seq+1)
