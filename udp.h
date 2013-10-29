@@ -1,7 +1,8 @@
 #include "unp.h"
+#include "unpifiplus.h"
 
 #define MSG_SYN 1
-#define MSG_SYNACK 2
+#define MSG_PROBE 2
 #define MSG_ACK 3
 #define MSG_EOF 4
 #define MSG_DATA 5
@@ -46,4 +47,3 @@ int enQueue(struct packet_t* packet);
 int peekQueueTail(struct packet_t* packet);
 int peekQueueHead(struct packet_t* packet);
 int deQueue(struct packet_t* packet);
-

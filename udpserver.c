@@ -209,6 +209,7 @@ int sendFile(struct connection* conn)
 	fd_set  rset;
         FD_ZERO(&rset);
 	int sentIndex = -1;
+	int clientws = -1;
 
 	while(!feof(fp) && peekQueueHead(packet)!=-1)
         {
@@ -235,15 +236,18 @@ int sendFile(struct connection* conn)
         }
         
         rtt_newpack(&rttinfo);
+	packet->ts = rtt_ts(&rttinfo);
+	udp_send(conn->sockfd, packet, NULL);
 	
 	for(;;)
 	{
-
-		udp_send(conn->sockfd, packet, NULL);
-sendagain:
-		packet->ts = rtt_ts(&rttinfo);
-		timeout.tv_usec = rtt_start(&rttinfo)/1000000;
-                timeout.tv_usec = rtt_start(&rttinfo)%1000000;
+		if(rttinit == 1)
+		{
+			packet->ts = rtt_ts(&rttinfo);
+			timeout.tv_sec = rtt_start(&rttinfo)/1000000;
+                	timeout.tv_usec = rtt_start(&rttinfo)%1000000;
+		}
+	
 		FD_SET(conn->sockfd, &rset);
                 if (select(conn->sockfd+1, &rset, NULL, NULL, &timeout) < 0)
                 {
@@ -251,7 +255,7 @@ sendagain:
                                 continue;
                         else
                         {
-                                printf("error sendFile:select() errno:%d\n", errno);
+                                printf("error sendFile:select() errno:%s\n", strerror(errno));
                                 return -1;
                         }
                 }
@@ -266,13 +270,16 @@ sendagain:
 				bzero(&tempPacket, sizeof(struct packet_t));
 				if(udp_recv(conn->sockfd, recvPacket, (SA*) &sockAddr) == 1)
                                 {
-					if(recvPacket->msgType == MSG_ACK && peekQueueTail(&tempPacket)!= -1 && recvPacket->seq >= tempPacket.seq+1)
+					if(recvPacket->msgType == MSG_ACK && peekQueueTail(&tempPacket)!= -1 && recvPacket->seq >= tempPacket.seq)
                                         {
 						while(peekQueueTail(&tempPacket) != -1 && recvPacket->seq > tempPacket.seq)
 						{
-							if(tail == sentIndex)
-								sentIndex = -1;
 							deQueue(&tempPacket);
+							if(tail == sentIndex)
+								sentIndex = -1;							
+//							if(tempPacket.seq == recvPacket->seq-1)
+//								rtt_stop(&rttinfo, (rtt_ts(&rttinfo) - recvPacket->ts)*1000000);
+								
 						}
 						
 						while(!feof(fp) && peekQueueHead(&tempPacket)!=-1)
@@ -286,12 +293,18 @@ sendagain:
 
 						if(eof!=1 && peekQueueTail(packet)== -1 && peekQueueHead(&tempPacket)!=-1)
         					{
+							if (rttinit == 0)
+                                                        {
+                                                                rtt_init(&rttinfo);
+                                                        	rttinit = 1;
+                                                                rtt_d_flag = 1;
+                                                        }
+                                                                
+                                                        rtt_newpack(&rttinfo);
 							printf("Finished Reading file. Sending EOF. Seq:%d\n", conn->seq);
 							bzero(packet, sizeof(packet));
                                                         packet->msgType = MSG_EOF;
                                                         packet->seq = conn->seq++;
-							rtt_newpack(&rttinfo);
-							rtt_init(&rttinfo);
 							enQueue(packet);
                                                         eof = 1;
 							continue;
@@ -300,17 +313,31 @@ sendagain:
 						{
 							if(eof!=1)
 							{
-								rtt_newpack(&rttinfo);
-								rtt_init(&rttinfo);
 								int reqPaks, i;
-								sentIndex = (sentIndex == -1)? tail : sentIndex;									
+								
+								if(sentIndex == -1)
+									sentIndex = tail;
+								else if(sentIndex < tail)
+									sentIndex += queueSize;
+
+								clientws = recvPacket->ws;
 								reqPaks = recvPacket->ws <= (queueSize-queueCapacity) ? recvPacket->ws : queueSize-queueCapacity;
 								reqPaks = tail+reqPaks-1;
 								
-								
-								if(reqPaks<=0 || reqPaks <= sentIndex)
-									goto sendagain;
+								if(reqPaks<=0 || reqPaks < sentIndex || recvPacket->ws == 0)
+								{
+									sentIndex = sentIndex%queueSize;
+									continue;
+								}
 
+								if (rttinit == 0)   
+        							{
+							                rtt_init(&rttinfo);
+                							rttinit = 1;
+                							rtt_d_flag = 1;
+        							}
+                
+								rtt_newpack(&rttinfo);
 								for(i = sentIndex; i <= reqPaks ; i++)
                                                 		{
                                                         		bzero(&tempPacket, sizeof(struct packet_t));
@@ -318,29 +345,47 @@ sendagain:
                                                         		printf("Window data Seq:%d\n", tempPacket.seq);
                                                         		udp_send(conn->sockfd, &tempPacket, NULL);
                                                 		}
-								sentIndex = reqPaks%queueSize;
+								sentIndex = (reqPaks+1)%queueSize;
 							}
 						}
 					}
 					else if(recvPacket->msgType == MSG_EOF && eof == 1 && queue[tail].seq+1)
 						break;
+				}
+				else
+				{
+					printf("recv didnt return 1.\n");
 				} 	
 			}
 			else
 			{
-				if(rtt_timeout(&rttinfo))
-                                {
-                                        rttinit = 0;
-                                        errno = ETIMEDOUT;
-                                        printf("error recvFile:rtt_timeout(). errno:%s\n",strerror(errno));
-                                        return -1;
-                                }
-				printf("sendFile: timeout. Resending Seq:%d msgType:%d rtt_rto:%d\n", packet->seq, packet->msgType, rttinfo.rtt_rto);
+				if(clientws == 0)
+				{
+					rttinit = 0;
+					timeout.tv_sec = 10;
+                        		timeout.tv_usec = 0;
+					struct packet_t tempPacket;
+	                                bzero(&tempPacket, sizeof(struct packet_t));
+					tempPacket.msgType = MSG_PROBE;
+					printf("sending probe packet.\n");				
+					udp_send(conn->sockfd, &tempPacket, NULL);
+				}
+				else
+				{
+					if(rtt_timeout(&rttinfo))
+                                	{
+                                        	rttinit = 0;
+                                        	errno = ETIMEDOUT;
+                                        	printf("error sendFile:rtt_timeout(). errno:%s\n",strerror(errno));
+                                        	return -1;
+                                	}
+					printf("sendFile: timeout. Resending Seq:%d msgType:%d rtt_rto:%d\n", packet->seq, packet->msgType, rttinfo.rtt_rto);
+					udp_send(conn->sockfd, packet, NULL);
+				}
 			}
 		}
 		
 	}
-	rtt_stop(&rttinfo, (rtt_ts(&rttinfo) - recvPacket->ts)*1000000);
         free(packet);
 	fclose(fp);
 	printf("Successfully finished sending file.\n");
@@ -363,6 +408,7 @@ int sendRebindPort(int sockfd, struct sockaddr* sockAddr, struct connection* con
         FD_ZERO(&rset);
         for ( ; ; )
         {
+		printf("sending for sendRebindPort seq:%d\n", packet->seq);
 		udp_send(sockfd, packet, sockAddr);
          	FD_SET(conn->sockfd, &rset);
 		if (select(conn->sockfd+1, &rset, NULL, NULL, &timeout) < 0)

@@ -16,9 +16,85 @@ struct client_config_t{
 	int seed;
 	double lossProb;
 	int mean;
+	int islocal;
 };
 
 struct client_config_t* clientConfig;
+
+int decide_if(struct bind_info* interfaces, int numIfs, char *server) {
+  unsigned char mask[32];
+  unsigned char cli[32];
+  unsigned char serv[32];
+  char buff[MAXLINE];
+  char pmask[16];
+  char pcli[16];
+  char pserv[16];
+  int x = 0;
+  int i = 0;
+
+  //check if the client and server are on the same host
+  for(i; i < numIfs; i++){
+    char* iptmp = inet_ntop(AF_INET, &(((struct sockaddr_in*)interfaces[i].bind_ipaddr)->sin_addr), buff, sizeof(buff));
+
+    if(strcmp(iptmp, server) == 0) {
+      printf("Both server and client are on same host. Using loopback address\n");
+      clientConfig->islocal = 1;
+	 return 0;
+     
+    }
+  }
+
+
+  //otherwise, check if they're local
+  strcpy(pserv, server);
+  ip_bit_array(pserv, serv);
+
+
+  for(x; x < numIfs; x++){
+    strcpy(pmask,inet_ntop(AF_INET, &(((struct sockaddr_in*)interfaces[x].bind_ntmaddr)->sin_addr), buff, sizeof(buff)));
+    strcpy(pcli,inet_ntop(AF_INET, &(((struct sockaddr_in*)interfaces[x].bind_ipaddr)->sin_addr), buff, sizeof(buff)));
+    
+    ip_bit_array(pmask, mask);
+    
+    ip_bit_array(pcli, cli);
+
+    int y = 0;
+    for(y; y < 32; y++){
+      if(mask[y] == 0){
+	return x;
+      }
+      else {
+	if(cli[y] != serv[y]){
+	  //not matching when they should
+	  break;
+	}
+      }
+    }
+  }
+
+  //if we're here we know it's not itself or a local address
+  return (numIfs -1);
+
+}
+
+int ip_bit_array(char* ip, unsigned char bits[32]) {
+  unsigned char to_convert[4];
+  int x = 0;
+  int status;
+
+  status = inet_pton(AF_INET, ip, to_convert);
+
+  for(x; x < 4; x++){
+    int y = 0;
+    int z = 7;
+    for(y; y < 8; y++){
+      bits[(x*8)+z] = (to_convert[x] >> y) & 1;
+      z--;
+    }
+    
+  }
+  
+}
 
 void readConfig()
 {
@@ -102,7 +178,9 @@ int printQueue()
 	struct packet_t packet;
 	while(1)
 	{
-		sleep( -1 * clientConfig->mean * log(drand48()));
+		float val = log(drand48());
+		//printf("sleeping for %f sec\n", -1 * clientConfig->mean * val);
+		sleep( -1 * clientConfig->mean * val);
 		if(deQueue(&packet)!=-1)
 		{
 			if(packet.msgType == MSG_EOF)
@@ -116,7 +194,7 @@ int printQueue()
 		}
 		else
 		{
-			printf("queueCapacity:%d head:%d tail:%d tail->seq:%d head->seq:%d\n", queueCapacity, head, tail, queue[tail].seq, queue[head].seq);
+			//printf("queueCapacity:%d head:%d tail:%d tail->seq:%d head->seq:%d\n", queueCapacity, head, tail, queue[tail].seq, queue[head].seq);
 		}
 	}
 }
@@ -221,7 +299,7 @@ int recvFile(struct connection* conn)
         {
 
 sendagain:
-	    	timeout.tv_usec = 5;
+	    	timeout.tv_sec = 5;
                 FD_SET(conn->sockfd, &rset);
                 if (select(conn->sockfd+1, &rset, NULL, NULL, &timeout) < 0)
                 {
@@ -241,10 +319,17 @@ sendagain:
                                 struct sockaddr_in sockAddr;
                                 if(udp_recv(conn->sockfd, recvPacket, (SA*) &sockAddr) == 1)
                                 {
-					if(recvPacket->msgType == MSG_DATA && recvPacket->seq >= packet->seq)
+					if(recvPacket->msgType == MSG_PROBE)
+					{
+						packet->ws = queueCapacity;
+						printf("sending Probe seq:%d ws:%d\n", packet->seq, packet->ws);						
+						udp_send(conn->sockfd, packet, NULL);
+						free(recvPacket);
+					}	
+					else if(recvPacket->msgType == MSG_DATA && recvPacket->seq >= packet->seq)
                                         {
-						
-						if(clientConfig->lossProb > ((double) drand48())) //(double)RAND_MAX))
+						float randProb = drand48();
+						if(clientConfig->lossProb > randProb) //(double)RAND_MAX))
                                         	{
                                                 	printf("dropping packet seq:%d msgType:%d\n", recvPacket->seq, recvPacket->msgType);
                                                 	goto sendagain;
@@ -258,9 +343,10 @@ sendagain:
 							packet->ts = recvPacket->ts;
 							packet->msgType = MSG_ACK;
 							printf("sending ACK:%d recv->seq:%d ws:%d\n", packet->seq, recvPacket->seq, packet->ws);
+							udp_send(conn->sockfd, packet, NULL);
 						}
 						free(recvPacket);
-						udp_send(conn->sockfd, packet, NULL);
+
 					}
 					else if(recvPacket->seq < queue[head].seq)
 					{
@@ -292,8 +378,12 @@ sendagain:
 					printf("Finished WAIT_TIME. breaking.\n");
 					break;
 				}
-				printf("recvFile: timeout. sending ack seq:%d msgType:%d\n", packet->seq, packet->msgType);
-				udp_send(conn->sockfd, packet, NULL);
+				if(queueCapacity != 0)
+				{
+					packet->ws = queueCapacity;
+					printf("sending window update:%d msgType:%d ws:%d\n", packet->seq, packet->msgType, packet->ws);
+					udp_send(conn->sockfd, packet, NULL);
+				}
 			}
 		}
 	}
@@ -329,6 +419,15 @@ int createNewConnection(struct connection* conn)
                 printf("error createNewConnection:setsockopt() errno:%d\n", errno);
 		return -1;
         }
+
+	if(clientConfig->islocal)
+	{
+		 if(setsockopt(sockfd, SOL_SOCKET, SO_DONTROUTE, &on, sizeof(on)) == -1)
+        	{
+                	printf("error createNewConnection:setsockopt() errno:%d\n", errno);
+                	return -1;
+        	}
+	}
 
 	inet_pton(AF_INET, conn->clientIp, &sockAddr.sin_addr);
         sockAddr.sin_family = AF_INET;
@@ -403,8 +502,17 @@ int main(int argc, char* argv)
 	}
 
 	struct connection* conn = (struct connection*) malloc(sizeof(struct connection));
-	inet_ntop(AF_INET, &((struct sockaddr_in *)(interfaces[1].bind_ipaddr))->sin_addr, conn->clientIp, sizeof(conn->clientIp));
-	strcpy(conn->serverIp, clientConfig->serverIp);
+	i = decide_if(interfaces, numInterfaces, clientConfig->serverIp);
+	if(clientConfig->islocal)
+	{
+		strcpy(conn->clientIp, "127.0.0.1");
+		strcpy(conn->serverIp, "127.0.0.1");
+	}
+	else
+	{
+		inet_ntop(AF_INET, &((struct sockaddr_in *)(interfaces[i].bind_ipaddr))->sin_addr, conn->clientIp, sizeof(conn->clientIp));
+		strcpy(conn->serverIp, clientConfig->serverIp);		
+	}
 	conn->serverPort = clientConfig->serverPort;	
 	conn->seq = clientConfig->seed;
 	strcpy(conn->fileName, clientConfig->fileName);

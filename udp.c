@@ -108,9 +108,11 @@ int enQueue(struct packet_t* packet)
                 
                 while((head+1)%queueSize!=tail && queue[(head+1)%queueSize].seq!=0)
                 {
+//			printf("-------moving tail :%d head:%d queue[head+1].seq:%d-------\n", tail, head, queue[(head+1)%queueSize].seq);
                         head = (head+1)%queueSize;
                         queueCapacity--;
                 }
+		
 		pthread_mutex_unlock(&queMutex);
 		return 1;
         }
