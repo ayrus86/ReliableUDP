@@ -7,8 +7,6 @@ int     rtt_d_flag = 0;         /* debug flag; can be set by caller */
  *      smoothed RTT plus four times the deviation
  */
 
-//#define RTT_RTOCALC(ptr) ((ptr)->rtt_srtt + (4.0 * (ptr)->rtt_rttvar))
-
 static int rtt_minmax(int rto)
 {
 	if (rto < RTT_RXTMIN)

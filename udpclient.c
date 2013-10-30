@@ -322,14 +322,14 @@ sendagain:
 					if(recvPacket->msgType == MSG_PROBE)
 					{
 						packet->ws = queueCapacity;
-						printf("sending Probe seq:%d ws:%d\n", packet->seq, packet->ws);						
+						//printf("sending Probe seq:%d ws:%d\n", packet->seq, packet->ws);						
 						udp_send(conn->sockfd, packet, NULL);
 						free(recvPacket);
 					}	
 					else if(recvPacket->msgType == MSG_DATA && recvPacket->seq >= packet->seq)
                                         {
 						float randProb = drand48();
-						if(clientConfig->lossProb > randProb) //(double)RAND_MAX))
+						if(clientConfig->lossProb > randProb)
                                         	{
                                                 	printf("dropping packet seq:%d msgType:%d\n", recvPacket->seq, recvPacket->msgType);
                                                 	goto sendagain;
@@ -342,8 +342,15 @@ sendagain:
 							packet->ws = queueCapacity;
 							packet->ts = recvPacket->ts;
 							packet->msgType = MSG_ACK;
-							printf("sending ACK:%d recv->seq:%d ws:%d\n", packet->seq, recvPacket->seq, packet->ws);
-							udp_send(conn->sockfd, packet, NULL);
+							if(drand48() < clientConfig->lossProb)
+							{
+								printf("dropping ack seq:%d msgType:%d\n", packet->seq, packet->msgType);
+							}
+							else
+							{	
+								printf("sending ACK:%d recv->seq:%d ws:%d\n", packet->seq, recvPacket->seq, packet->ws);
+								udp_send(conn->sockfd, packet, NULL);
+							}
 						}
 						free(recvPacket);
 

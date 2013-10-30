@@ -4,6 +4,7 @@
 #include "unprtt.h"
 
 #define DEBUG 1
+
 static struct msghdr msgsend, msgrecv;
 
 
@@ -17,6 +18,7 @@ struct server_config_t* serverConfig;
 struct packet_t* queue;
 struct rtt_info rttinfo;
 int rttinit = 0;
+float threshold;
 
 void signalHandler(int signal)
 {                               
@@ -200,7 +202,7 @@ int sendFile(struct connection* conn)
         queueSize = serverConfig->winSize;
 	queue = (struct packet_t*) malloc(serverConfig->winSize * sizeof(struct packet_t));
 	bzero(queue, sizeof(serverConfig->winSize * sizeof(struct packet_t)));
-	
+
 	struct packet_t* packet = (struct packet_t*) malloc(sizeof(struct packet_t));
 	struct timeval timeout;
 	struct packet_t* recvPacket;
@@ -226,8 +228,12 @@ int sendFile(struct connection* conn)
 		printf("Nothing to send.\n");
                 return 1;
 	}
-	int eof = 0;
 
+	int eof = 0;
+	float congWnd = 1;
+	int lastack = packet->seq-1;
+	int lastackcount = 0;
+	
 	if (rttinit == 0)
         {
                 rtt_init(&rttinfo);
@@ -275,10 +281,19 @@ int sendFile(struct connection* conn)
 						while(peekQueueTail(&tempPacket) != -1 && recvPacket->seq > tempPacket.seq)
 						{
 							deQueue(&tempPacket);
+							
 							if(tail == sentIndex)
-								sentIndex = -1;							
-//							if(tempPacket.seq == recvPacket->seq-1)
-//								rtt_stop(&rttinfo, (rtt_ts(&rttinfo) - recvPacket->ts)*1000000);
+								sentIndex = -1;
+
+							if(congWnd < threshold)
+								congWnd += 1;
+							else
+							{
+								congWnd = congWnd + 1/congWnd;
+								threshold = congWnd;
+							}
+							//if(tempPacket.seq == recvPacket->seq-1)
+							//	rtt_stop(&rttinfo, (rtt_ts(&rttinfo) - recvPacket->ts)*1000000);
 								
 						}
 						
@@ -291,66 +306,62 @@ int sendFile(struct connection* conn)
 							enQueue(&tempPacket);
         					}
 
-						if(eof!=1 && peekQueueTail(packet)== -1 && peekQueueHead(&tempPacket)!=-1)
+						if(feof(fp) &&  eof!=1 && peekQueueHead(&tempPacket)!=-1)
         					{
-							if (rttinit == 0)
-                                                        {
-                                                                rtt_init(&rttinfo);
-                                                        	rttinit = 1;
-                                                                rtt_d_flag = 1;
-                                                        }
-                                                                
-                                                        rtt_newpack(&rttinfo);
-							printf("Finished Reading file. Sending EOF. Seq:%d\n", conn->seq);
 							bzero(packet, sizeof(packet));
                                                         packet->msgType = MSG_EOF;
                                                         packet->seq = conn->seq++;
-							enQueue(packet);
+							printf("Finished reading file. Enqueuing EOF packet. seq:%d\n", packet->seq);
+							if(enQueue(packet) == -1)
+								printf("Failed to enqueue EOF.\n");
                                                         eof = 1;
-							continue;
         					}
-						else
+						if(peekQueueTail(packet)!= -1)
 						{
-							if(eof!=1)
+							int reqPaks, i;
+								
+							if(sentIndex == -1)
+								sentIndex = tail;
+							else if(sentIndex < tail)
+								sentIndex += queueSize;
+
+							clientws = recvPacket->ws;
+							reqPaks = recvPacket->ws <= (queueSize-queueCapacity) ? recvPacket->ws : queueSize-queueCapacity;
+							reqPaks = congWnd < reqPaks ? congWnd : reqPaks;
+							reqPaks = tail+reqPaks-1;
+							
+							printf("window data congWnd:%f threshold:%f\n", congWnd, threshold);
+
+							if(reqPaks<0 || reqPaks < sentIndex || recvPacket->ws == 0)
 							{
-								int reqPaks, i;
-								
-								if(sentIndex == -1)
-									sentIndex = tail;
-								else if(sentIndex < tail)
-									sentIndex += queueSize;
-
-								clientws = recvPacket->ws;
-								reqPaks = recvPacket->ws <= (queueSize-queueCapacity) ? recvPacket->ws : queueSize-queueCapacity;
-								reqPaks = tail+reqPaks-1;
-								
-								if(reqPaks<=0 || reqPaks < sentIndex || recvPacket->ws == 0)
-								{
-									sentIndex = sentIndex%queueSize;
-									continue;
-								}
-
-								if (rttinit == 0)   
-        							{
-							                rtt_init(&rttinfo);
-                							rttinit = 1;
-                							rtt_d_flag = 1;
-        							}
-                
-								rtt_newpack(&rttinfo);
-								for(i = sentIndex; i <= reqPaks ; i++)
-                                                		{
-                                                        		bzero(&tempPacket, sizeof(struct packet_t));
-                                                        		memcpy(&tempPacket, &queue[i%queueSize], sizeof(struct packet_t));
-                                                        		printf("Window data Seq:%d\n", tempPacket.seq);
-                                                        		udp_send(conn->sockfd, &tempPacket, NULL);
-                                                		}
-								sentIndex = (reqPaks+1)%queueSize;
+								sentIndex = sentIndex%queueSize;
+								continue;
 							}
+
+
+							if (rttinit == 0)   
+        						{
+								rtt_init(&rttinfo);
+                						rttinit = 1;
+                						rtt_d_flag = 1;
+        						}
+                
+							rtt_newpack(&rttinfo);
+							for(i = sentIndex; i <= reqPaks ; i++)
+                                                	{
+                                                        	bzero(&tempPacket, sizeof(struct packet_t));
+                                                        	memcpy(&tempPacket, &queue[i%queueSize], sizeof(struct packet_t));
+                                                        	printf("Window data Seq:%d\n", tempPacket.seq);
+                                                        	udp_send(conn->sockfd, &tempPacket, NULL);
+                                                	}
+							sentIndex = (reqPaks+1)%queueSize;
 						}
 					}
-					else if(recvPacket->msgType == MSG_EOF && eof == 1 && queue[tail].seq+1)
+					else if(recvPacket->msgType == MSG_EOF && eof == 1 && recvPacket->seq == queue[tail].seq+1)
+					{
+						printf("Got ack for EOF. Exiting Server(child).\n");
 						break;
+					}
 				}
 				else
 				{
@@ -379,6 +390,14 @@ int sendFile(struct connection* conn)
                                         	printf("error sendFile:rtt_timeout(). errno:%s\n",strerror(errno));
                                         	return -1;
                                 	}
+
+					threshold = congWnd/2;
+					congWnd = 1;
+
+					if(threshold == 0)
+						threshold = 1;
+					printf("timeout congWnd:%f threshold:%f\n", congWnd, threshold);
+
 					printf("sendFile: timeout. Resending Seq:%d msgType:%d rtt_rto:%d\n", packet->seq, packet->msgType, rttinfo.rtt_rto);
 					udp_send(conn->sockfd, packet, NULL);
 				}
@@ -404,7 +423,7 @@ int sendRebindPort(int sockfd, struct sockaddr* sockAddr, struct connection* con
         timeout.tv_sec = 5;
         timeout.tv_usec = 0;
 
-	fd_set  rset;
+	fd_set  rset;	
         FD_ZERO(&rset);
         for ( ; ; )
         {
@@ -433,6 +452,7 @@ int sendRebindPort(int sockfd, struct sockaddr* sockAddr, struct connection* con
 					if(recvPacket->msgType == MSG_ACK && recvPacket->seq == conn->seq+1)
 					{
 						conn->seq = recvPacket->seq;
+						threshold = recvPacket->ws / 2;
 						printf("Got ACK on rebound port. 3-way Handshake successful. seq:%d\n", conn->seq);
 						free(recvPacket);
 						return 1;
