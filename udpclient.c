@@ -309,8 +309,9 @@ sendagain:
                         {
 			        recvPacket = (struct packet_t*)malloc(sizeof(struct packet_t));
                                 struct sockaddr_in sockAddr;
-                                if(udp_recv(conn->sockfd, recvPacket, (SA*) &sockAddr) == 1)
+				if(udp_recv(conn->sockfd, recvPacket, (SA*) &sockAddr) == 1)
                                 {
+					//printf("recv seq:%d. queue[head].seq=%d\n", recvPacket->seq, queue[head].seq);
 					if(recvPacket->msgType == MSG_PROBE)
 					{
 						packet->ws = queueCapacity;
@@ -349,7 +350,7 @@ sendagain:
 							printf("Receiver window is locked.\n");
 
 					}
-					else if(recvPacket->seq < queue[head].seq)
+					else if(recvPacket->seq < packet->seq)//queue[head].seq)
 					{
 
 						//received a old duplicate packet. ignore it

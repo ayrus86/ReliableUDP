@@ -402,7 +402,6 @@ int sendFile(struct connection* conn)
 					if(threshold == 0)
 						threshold = 1;
 
-					//printf("timeout congWnd:%f threshold:%f\n", congWnd, threshold);
 
 					printf("sendFile: timedout. Resending Seq:%d rtt_rto:%d(micro-sec)\n", packet->seq, 
 rttinfo.rtt_rto);

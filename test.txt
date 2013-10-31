@@ -15,3 +15,137 @@ Congestion Avoidance (‘Additive-Increase/Multiplicative Decrease’ – AIMD)
 Fast Recovery (but without the window-inflation aspect of Fast Recovery)
 Only some, and by no means all, of the details for these are covered below. The rest will be presented in class, especially those concerning flow control and TCP Reno’s 
 congestion control mechanisms in general :  Slow Start, Congestion Avoidance, Fast Retransmit and Fast Recovery.
+The client checks if the server host is ‘local’ to its (extended) Ethernet. If so, all its communication to the server is to occur as MSG_DONTROUTE (or SO_DONTROUTE socket 
+option). It determines if the server host is ‘local’ as follows.
+The first thing the client should do is to use the modified get_ifi_info function to obtain all of its IP addresses and associated network masks.
+
+Print out on stdout, in dotted decimal notation and with an appropriate message, the IP addresses and network masks obtained.
+
+In the following, IPserver designates the IP address the client will use to identify the server, and IPclient designates the IP address the client will choose to identify 
+itself.
+
+The client checks whether the server is on the same host. If so, it should use the loopback address 127.0.0.1 for the server (i.e. , IPserver = 127.0.0.1). IPclient should 
+also be set to the loopback address.
+
+Otherwise it proceeds as follows:
+
+IPserver is set to the IP address for the server in the client.in file. Given IPserver and the (unicast) IP addresses and network masks for the client returned by get_ifi_info 
+in the linked list of ifi_info structures, you should be able to figure out if the server node is ‘local’ or not. This will be discussed in class; but let me just remind 
+you here that you should use ‘longest prefix matching’ where applicable.
+
+If there are multiple client addresses, and the server host is ‘local’, the client chooses an IP address for itself, IPclient, which matches up as ‘local’ according to 
+your examination above. If the server host is not ‘local’, then IPclient can be chosen arbitrarily.
+
+Print out on stdout the results of your examination, as to whether the server host is ‘local’ or not, as well as the IPclient and IPserver addresses selected.
+
+Note that this manner of determining whether the server is local or not is somewhat clumsy and ‘over-engineered’, and, as such, should be viewed more in the nature of a 
+pedagogical exercise. Ideally, we would like to look up the server IP address(es) in the routing table (see Section 18.3). This requires that a routing socket be created, for 
+which we need superuser privilege. Alternatively, we might want to dump out the routing table, using the sysctl function for example (see Section 18.4), and examine it 
+directly. Unfortunately, Solaris 2.10 does not support sysctl. 
+
+More to the point, using MSG_DONTROUTE where possible would seem to gain us efficiency, in as much as the kernel does not need to consult the routing table for every datagram 
+sent. But, in fact, that is not so. Recall that one effect of connect with UDP sockets is that routing information is obtained by the kernel at the time the connect is issued. 
+That information is cached and used for subsequent sends from the connected socket (see p.255).
+
+The client now creates a UDP socket and calls bind on IPclient, with 0 as the port number. This will cause the kernel to bind an ephemeral port to the socket.
+
+After the bind, use the getsockname function (Section 4.10) to obtain IPclient and the ephemeral port number that has been assigned to the socket, and print that information 
+out on stdout, with an appropriate message and appropriately formatted.
+
+The client connects its socket to IPserver and the well-known port number of the server.
+
+After the connect, use the getpeername function (Section 4.10) to obtain IPserver and the well-known port number of the server, and print that information out on stdout, with 
+an appropriate message and appropriately formatted.
+
+The client sends a datagram to the server giving the filename for the transfer. This send needs to be backed up by a timeout in case the datagram is lost.
+
+Note that the incoming datagram from the client will be delivered to the server at the socket to which the destination IP address that the datagram is carrying has been bound. 
+Thus, the server can obtain that address (it is, of course, IPserver) and thereby achieve what IP_RECVDESTADDR would have given us had it been available.
+
+Furthermore, the server process can obtain the IP address (this will, of course, be IPclient) and ephemeral port number of the client through the recvfrom or recvmsg 
+functions.
+
+The server forks off a child process to handle the client. The server parent process goes back to the select to listen for new clients. Hereafter, and unless otherwise stated, 
+whenever we refer to the ‘server’, we mean the server child process handling the client’s file transfer, not the server parent process.
+
+Typically, the first thing the server child would be expected to do is to close all sockets it ‘inherits’ from its parent. However, this is not the case with us. The 
+server child does indeed close the sockets it inherited, but not the socket on which the client request arrived. It leaves that socket open for now. Call this socket the 
+‘listening’ socket.
+
+The server (child) then checks if the client host is local to its (extended) Ethernet. If so, all its communication to the client is to occur as MSG_DONTROUTE (or SO_DONTROUTE 
+socket option).
+
+If IPserver (obtained in 5. above) is the loopback address, then we are done. Otherwise, the server has to proceed with the following step.
+
+Use the array of structures you built in 1. above, together with the addresses IPserver and IPclient to determine if the client is ‘local’.
+
+Print out on stdout the results of your examination, as to whether the client host is ‘local’ or not.
+The server (child) creates a UDP socket to handle file transfer to the client. Call this socket the ‘connection’ socket. It binds the socket to IPserver, with port number 
+0 so that its kernel assigns an ephemeral port.
+
+After the bind, use the getsockname function (Section 4.10) to obtain IPserver and the ephemeral port number that has been assigned to the socket, and print that information 
+out on stdout, with an appropriate message and appropriately formatted.
+
+The server then connects this ‘connection’ socket to the client’s IPclient and ephemeral port number.
+
+The server now sends the client a datagram, in which it passes it the ephemeral port number of its ‘connection’ socket as the data payload of the datagram. This datagram 
+is sent using the ‘listening’ socket inherited from its parent, otherwise the client (whose socket is connected to the server’s ‘listening’ socket at the latter’s 
+well-known port number) will reject it. This datagram must be backed up by the ARQ mechanism, and retransmitted in the event of loss.
+
+Note that if this datagram is indeed lost, the client might well time out and retransmit its original request message (the one carrying the file name). In this event, you must 
+somehow ensure that the parent server does not mistake this retransmitted request for a new client coming in, and spawn off yet another child to handle it. How do you do that? 
+It is potentially more involved than it might seem. I will be discussing this in class, as well as ‘race’ conditions that could potentially arise, depending on how you 
+code the mechanisms I present.
+
+When the client receives the datagram carrying the ephemeral port number of the server’s ‘connection’ socket, it reconnects its socket to the server’s ‘connection’ 
+socket, using IPserver and the ephemeral port number received in the datagram (see p.254). It now uses this reconnected socket to send the server an acknowledgment. Note that 
+this implies that, in the event of the server timing out, it should retransmit two copies of its ‘ephemeral port number’ message, one on its ‘listening’ socket and the 
+other on its ‘connection’ socket (why?).
+
+When the server receives the acknowledgment, it closes the ‘listening’ socket it inherited from its parent. The server can now commence the file transfer through its 
+‘connection’ socket.
+
+The net effect of all these binds and connects at server and client is that no ‘outsider’ UDP datagram (broadcast, multicast, unicast - fortuitously or maliciously) can 
+now intrude on the communication between server and client.
+
+Starting with the first datagram sent out, the client behaves as follows.
+
+Whenever a datagram arrives, or an ACK is about to be sent out (or, indeed, the initial datagram to the server giving the filename for the transfer), the client uses some 
+random number generator function random() (initialized by the client.in argument value seed) to decide with probability p (another client.in argument value) if the datagram or 
+ACK should be discarded by way of simulating transmission loss across the network. (I will briefly discuss in class how you do this.)
+
+Adding reliability to UDP
+
+The mechanisms you are to implement are based on TCP Reno. These include :
+
+Reliable data transmission using ARQ sliding-windows, with Fast Retransmit.
+Flow control via receiver window advertisements.
+Congestion control that implements :
+SlowStart
+Congestion Avoidance (‘Additive-Increase/Multiplicative Decrease’ – AIMD)
+Fast Recovery (but without the window-inflation aspect of Fast Recovery)
+Only some, and by no means all, of the details for these are covered below. The rest will be presented in class, especially those concerning flow control and TCP Reno’s 
+congestion control mechanisms in general :  Slow Start, Congestion Avoidance, Fast Retransmit and Fast Recovery.
+
+Implement a timeout mechanism on the sender (server) side. This is available to you from Stevens, Section 22.5 . Note, however, that you will need to modify the basic driving 
+mechanism of Figure 22.7 appropriately since the situation at the sender side is not a repetitive cycle of send-receive, but rather a straightforward progression of 
+send-send-send-send- . . . . . . . . . . .
+
+Also, modify the RTT and RTO mechanisms of Section 22.5 as specified below. I will be discussing the details of these modifications and the reasons for them in class.
+
+Modify function rtt_stop (Fig. 22.13) so that it uses integer arithmetic rather than floating point. This will entail your also having to modify some of the variable and 
+function parameter declarations throughout Section 22.5 from float to int, as appropriate.
+
+In the unprrt.h header file (Fig. 22.10) set :
+          RTT_RXTMIN   to 1000 msec.   (1 sec. instead of the current value   3 sec.)
+          RTT_RXTMAX  to 3000 msec.   (3 sec. instead of the current value 60 sec.)
+          RTT_MAXNREXMT  to 12        (instead of the current value 3)
+
+In function rtt_timeout (Fig. 22.14), after doubling the RTO in line 86, pass its value through the function rtt_minmax of Fig. 22.11 (somewhat along the lines of what is done 
+in line 77 of rtt_stop, Fig. 22.13).
+
+Finally, note that with the modification to integer calculation of the smoothed RTT and its variation, and given the small RTT values you will experience on the cs / sbpub 
+network, these calculations should probably now be done on a millisecond or even microsecond scale (rather than in seconds, as is the case with Stevens’ code). Otherwise, 
+small measured RTTs could show up as 0 on a scale of seconds, yielding a negative result when we subtract the smoothed RTT from the measured RTT (line 72 of rtt_stop, Fig. 
+22.13).
+
