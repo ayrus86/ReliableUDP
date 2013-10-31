@@ -3,7 +3,7 @@
 #include "udp.h"
 #include "unprtt.h"
 
-#define DEBUG 1
+//#define DEBUG 1
 
 static struct msghdr msgsend, msgrecv;
 
@@ -243,6 +243,7 @@ int sendFile(struct connection* conn)
         
         rtt_newpack(&rttinfo);
 	packet->ts = rtt_ts(&rttinfo);
+	printf("Sending data Seq:%d\n", packet->seq);
 	udp_send(conn->sockfd, packet, NULL);
 	
 	for(;;)
@@ -306,6 +307,9 @@ int sendFile(struct connection* conn)
 							enQueue(&tempPacket);
         					}
 
+						if(queueCapacity == 0)
+							printf("Sender window is locked.\n");
+
 						if(feof(fp) &&  eof!=1 && peekQueueHead(&tempPacket)!=-1)
         					{
 							bzero(packet, sizeof(packet));
@@ -330,7 +334,6 @@ int sendFile(struct connection* conn)
 							reqPaks = congWnd < reqPaks ? congWnd : reqPaks;
 							reqPaks = tail+reqPaks-1;
 							
-							printf("window data congWnd:%f threshold:%f\n", congWnd, threshold);
 
 							if(reqPaks<0 || reqPaks < sentIndex || recvPacket->ws == 0)
 							{
@@ -345,13 +348,15 @@ int sendFile(struct connection* conn)
                 						rttinit = 1;
                 						rtt_d_flag = 1;
         						}
-                
+                					
+							printf("cwnd:%d client ws:%d\n", (int)congWnd, recvPacket->ws);
+
 							rtt_newpack(&rttinfo);
 							for(i = sentIndex; i <= reqPaks ; i++)
                                                 	{
                                                         	bzero(&tempPacket, sizeof(struct packet_t));
                                                         	memcpy(&tempPacket, &queue[i%queueSize], sizeof(struct packet_t));
-                                                        	printf("Window data Seq:%d\n", tempPacket.seq);
+                                                        	printf("Sending data Seq:%d\n", tempPacket.seq);
                                                         	udp_send(conn->sockfd, &tempPacket, NULL);
                                                 	}
 							sentIndex = (reqPaks+1)%queueSize;
@@ -359,7 +364,7 @@ int sendFile(struct connection* conn)
 					}
 					else if(recvPacket->msgType == MSG_EOF && eof == 1 && recvPacket->seq == queue[tail].seq+1)
 					{
-						printf("Got ack for EOF. Exiting Server(child).\n");
+						printf("Got ACK for EOF. Exiting Server(child).\n");
 						break;
 					}
 				}
@@ -378,7 +383,7 @@ int sendFile(struct connection* conn)
 					struct packet_t tempPacket;
 	                                bzero(&tempPacket, sizeof(struct packet_t));
 					tempPacket.msgType = MSG_PROBE;
-					printf("sending probe packet.\n");				
+					printf("Sending probe packet.\n");				
 					udp_send(conn->sockfd, &tempPacket, NULL);
 				}
 				else
@@ -396,9 +401,11 @@ int sendFile(struct connection* conn)
 
 					if(threshold == 0)
 						threshold = 1;
-					printf("timeout congWnd:%f threshold:%f\n", congWnd, threshold);
 
-					printf("sendFile: timeout. Resending Seq:%d msgType:%d rtt_rto:%d\n", packet->seq, packet->msgType, rttinfo.rtt_rto);
+					//printf("timeout congWnd:%f threshold:%f\n", congWnd, threshold);
+
+					printf("sendFile: timedout. Resending Seq:%d rtt_rto:%d(micro-sec)\n", packet->seq, 
+rttinfo.rtt_rto);
 					udp_send(conn->sockfd, packet, NULL);
 				}
 			}
@@ -423,11 +430,11 @@ int sendRebindPort(int sockfd, struct sockaddr* sockAddr, struct connection* con
         timeout.tv_sec = 5;
         timeout.tv_usec = 0;
 
+	printf("Sending rebind port. Seq:%d\n", packet->seq);
 	fd_set  rset;	
         FD_ZERO(&rset);
         for ( ; ; )
         {
-		printf("sending for sendRebindPort seq:%d\n", packet->seq);
 		udp_send(sockfd, packet, sockAddr);
          	FD_SET(conn->sockfd, &rset);
 		if (select(conn->sockfd+1, &rset, NULL, NULL, &timeout) < 0)
@@ -453,14 +460,14 @@ int sendRebindPort(int sockfd, struct sockaddr* sockAddr, struct connection* con
 					{
 						conn->seq = recvPacket->seq;
 						threshold = recvPacket->ws / 2;
-						printf("Got ACK on rebound port. 3-way Handshake successful. seq:%d\n", conn->seq);
+						printf("Got ACK on rebound port. 3-way Handshake successful.\n");
 						free(recvPacket);
 						return 1;
 					}
 				}
 			}
 			else
-				printf("sendRebindPort: timed out. resending seq:%d\n", conn->seq);               
+				printf("Send rebind port timed out. Resending Seq:%d\n", conn->seq);               
 		}
 	}
 	return -1;

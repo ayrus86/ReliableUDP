@@ -6,7 +6,7 @@
 #include "unpifiplus.h"
 #include "unprtt.h"
 
-#define DEBUG 1
+//#define DEBUG 1
 
 struct client_config_t{
 	char serverIp[INET_ADDRSTRLEN];
@@ -167,11 +167,6 @@ void getInterfaces(struct bind_info** addrInterfaces, int* numInterfaces)
         *addrInterfaces = interfaces;
 }
 
-/*static void sig_alrm(int signo)
-{
-        siglongjmp(jmpbuf, 1);
-} */
-
 int printQueue()
 {
 	int ret = 0;
@@ -179,17 +174,16 @@ int printQueue()
 	while(1)
 	{
 		float val = log(drand48());
-		//printf("sleeping for %f sec\n", -1 * clientConfig->mean * val);
 		sleep( -1 * clientConfig->mean * val);
 		if(deQueue(&packet)!=-1)
 		{
 			if(packet.msgType == MSG_EOF)
 			{
-				printf("read end of file.seq:%d\n", packet.seq);
+				printf("Read EOF. Seq:%d\n", packet.seq);
 				ret = 1;
 				pthread_exit(&ret);
 			}
-			printf("Read seq:%d msg:%s\n", packet.seq, packet.msg);
+			printf("Read Seq:%d Data:%s", packet.seq, packet.msg);
 			bzero(&packet, sizeof(packet));
 		}
 		else
@@ -250,7 +244,6 @@ int requestRebind(struct connection* conn)
                 					return -1;
         					}
 						free(recvPacket);
-        					printf("Port rebound successful. Sending ACK to finish 3-Way handshake.\n");
 						goto sendack;						
 					}  
                                 }
@@ -281,9 +274,6 @@ int recvFile(struct connection* conn)
 	bzero(packet, sizeof(struct packet_t));
 	struct packet_t* recvPacket;
 	
-/*	if(peekQueueHead(packet)==-1)
-		return -1;*/	
-	
 	packet->seq = conn->seq;
 	packet->ws = queueCapacity;
         packet->msgType = MSG_ACK;
@@ -294,7 +284,9 @@ int recvFile(struct connection* conn)
 	fd_set  rset;
         FD_ZERO(&rset);
 	srand(clientConfig->seed);
-	
+        printf("Port rebound successful. Sending ACK to finish 3-Way handshake. Next Seq:%d WS:%d\n", packet->seq, packet->ws);
+ 	udp_send(conn->sockfd, packet, NULL);
+
 	for(;;)
         {
 
@@ -322,7 +314,6 @@ sendagain:
 					if(recvPacket->msgType == MSG_PROBE)
 					{
 						packet->ws = queueCapacity;
-						//printf("sending Probe seq:%d ws:%d\n", packet->seq, packet->ws);						
 						udp_send(conn->sockfd, packet, NULL);
 						free(recvPacket);
 					}	
@@ -331,7 +322,7 @@ sendagain:
 						float randProb = drand48();
 						if(clientConfig->lossProb > randProb)
                                         	{
-                                                	printf("dropping packet seq:%d msgType:%d\n", recvPacket->seq, recvPacket->msgType);
+                                                	printf("Dropping Packet Seq:%d\n", recvPacket->seq);
                                                 	goto sendagain;
                                         	}
 						
@@ -344,36 +335,58 @@ sendagain:
 							packet->msgType = MSG_ACK;
 							if(drand48() < clientConfig->lossProb)
 							{
-								printf("dropping ack seq:%d msgType:%d\n", packet->seq, packet->msgType);
+								printf("Dropping ACK. Seq:%d\n", packet->seq);
 							}
 							else
 							{	
-								printf("sending ACK:%d recv->seq:%d ws:%d\n", packet->seq, recvPacket->seq, packet->ws);
+								printf("Sending ACK. Next Seq:%d WS:%d\n", packet->seq, packet->ws);
 								udp_send(conn->sockfd, packet, NULL);
 							}
 						}
 						free(recvPacket);
+						
+						if(queueCapacity == 0)
+							printf("Receiver window is locked.\n");
 
 					}
 					else if(recvPacket->seq < queue[head].seq)
 					{
+
+						//received a old duplicate packet. ignore it
 						free(recvPacket);
-						continue; //received a old duplicate packet. ignore it
+						if(drand48() < clientConfig->lossProb)
+                                                {
+                                                	printf("Dropping ACK. Seq:%d\n", packet->seq);
+                                                }
+                                                else
+                                                {
+                                                	printf("Sending ACK. Next Seq:%d WS:%d\n", packet->seq, packet->ws);
+                                                 	udp_send(conn->sockfd, packet, NULL);
+                                                }
 					}
 					else if(recvPacket->msgType == MSG_EOF && recvPacket->seq >= queue[head].seq)
 					{
 						int n = 0;
-						if((eof!= 1) && (enQueue(recvPacket) != -1))
+						if((eof!= 1))
+						// && (enQueue(recvPacket) != -1))
                                                 {
-							//printf("inside eof if. recv->seq:%d\n",recvPacket->seq);							
 							bzero(packet, sizeof(struct packet_t));	
 							packet->msgType = MSG_EOF;
 							packet->ws = queueCapacity;
 							packet->ts = recvPacket->ts;
-							packet->seq = queue[head].seq+1;
-							eof = 1;
+							if(drand48() < clientConfig->lossProb)
+	                                                {
+        	                                                printf("Received EOF. Dropping ACK. Seq:%d\n", packet->seq);
+                	                                }
+                        	                        else if(enQueue(recvPacket)!=-1)
+                                	                {
+								packet->seq = queue[head].seq+1;
+                                        	                printf("Received EOF. Sending ACK. Next Seq:%d WS:%d\n", 
+packet->seq, packet->ws);
+                                                	        udp_send(conn->sockfd, packet, NULL);
+								eof = 1;
+                                                	}
 							free(recvPacket);
- 							udp_send(conn->sockfd, packet, NULL);
 						}
 					}
 				}
@@ -382,13 +395,13 @@ sendagain:
 			{
 				if(eof == 1)
 				{
-					printf("Finished WAIT_TIME. breaking.\n");
+					printf("Finished TIME_WAIT. No more data to read from server.\n");
 					break;
 				}
 				if(queueCapacity != 0)
 				{
 					packet->ws = queueCapacity;
-					printf("sending window update:%d msgType:%d ws:%d\n", packet->seq, packet->msgType, packet->ws);
+					printf("Sending Window Update. Seq:%d WS:%d\n", packet->seq, packet->ws);
 					udp_send(conn->sockfd, packet, NULL);
 				}
 			}
@@ -400,7 +413,7 @@ sendagain:
 	pthread_join(tid, (void *)&retval);
 	if(*retval == 1)
 	{
-		printf("finished reading file.\n");
+		printf("Finished reading file.\n");
 		return 1;
 	}
 	return -1;
@@ -456,7 +469,7 @@ int createNewConnection(struct connection* conn)
         }
         conn->clientPort = ntohs(sockAddr.sin_port);
  	strcpy(conn->clientIp, inet_ntop(AF_INET, &sockAddr.sin_addr, buf, sizeof(buf)));
-	printf("Client IP:%s Port:%d\n", conn->clientIp, conn->clientPort);
+	printf("Client IP:%s Ephemeral Port:%d\n", conn->clientIp, conn->clientPort);
 
 	bzero(&sockAddr, sizeof(sockAddr));
         bzero(buf, sizeof(buf));
@@ -481,7 +494,7 @@ int createNewConnection(struct connection* conn)
 	conn->sockfd = sockfd;
 	strcpy(conn->serverIp, inet_ntop(AF_INET, &sockAddr.sin_addr, buf, sizeof(buf)));
 	conn->serverPort = ntohs(sockAddr.sin_port);
-	printf("Server IP:%s Port:%d\n", conn->serverIp, conn->serverPort);
+	printf("Server IP:%s Peer Port:%d\n\n", conn->serverIp, conn->serverPort);
 	return 1;
 }
 
