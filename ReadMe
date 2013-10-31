@@ -1,1 +1,125 @@
-this
+Team Members: Surya K G Tangatur (108945973)
+              Chris Weber
+
+Modifications to bind only unicast address:
+------------------------------------------
+struct bind_info{
+  int sockfd;
+  struct sockaddr *bind_ipaddr;
+  struct sockaddr *bind_ntmaddr;
+  struct in_addr *bind_subaddr;
+};
+
+We are using get_ifi_info_plus() function to obtain the list of interfaces on the machine and storing the data in the
+struct bind_info shown above, and create a UDP socket for each instance of bind_info. To make sure that server listens
+only on unicast address and not the broadcast and wildcard addresses, we are checking ifi_flags of the struct ifi_info
+and if its IFF_BROADCAST, we are skipping binding to that address. Also, we modified the stevens code in section 22.6
+by removing the part where he binds to wildcard address.
+
+Managing Active connections on server:
+--------------------------------------
+struct connection{
+        pid_t pid;
+        int pipefd;
+        char clientIp[INET_ADDRSTRLEN];
+        int clientPort;
+        char serverIp[INET_ADDRSTRLEN];
+        int serverPort;
+        struct connection* next;
+        struct connection* prev;
+};
+
+To keep track of all the active server(child) threads and avoid re-spanning of a child if a duplicate request for the file
+arrives on the listening port, server maintains a doubly-linked list of stuct connection shown above. When the child dies,
+the server(parent) process removes the connection instance from the list. When server(parent) receives a duplicate request
+on listening port, it informs so to server(child) using the pipe. The server(child) blocks on connection sockfd and pipefd
+till the 3-way handshake is successful.
+
+Modifications to RTT family of funtions:
+----------------------------------------
+As mentioned in the write-up rtt_rtt, rtt_stt, rtt_rto and rtt_base have been changed to int instead of floats and corresponding
+rtt_* family of functions were updated to use int's in rtt.c. Changed the RTT_RXTMIN, RTT_RXTMAX and RTT_MAXNREXMT values as per
+the write-up and in microseconds instead of seconds. Post doubling of the rtt_rto value in rtt_timeout, we added the code to make
+sure the new value lies between RTT_RXTMIN and RTT_RXTMAX.
+
+MSG Structure:
+-------------
+#define MSG_SYN 1
+#define MSG_PROBE 2
+#define MSG_ACK 3
+#define MSG_EOF 4
+#define MSG_DATA 5
+
+struct packet_t{
+        int msgType;
+        uint32_t seq;
+        uint32_t ws;
+        uint32_t ts;
+        char msg[496];
+};
+
+Each packet that is exchange between client and server has a fixed size of 512 bytes as shown above. The packet has a msgType which identifies
+if its an ACK, SYN, EOF or file data packet along with a seq number for ordering. It has a ts field for the RTT calculations.
+
+Flow Control:
+------------
+Starting with final ACK of 3-way handshake, the client sends the number of free slots left in its queue with every ACK packet.
+Using this data, server only sends those packets which were previously not sent and which can be sent since the receiver claims to
+have enough queue space to hold them.
+
+For ex.,  client sends ack seq: 49 ws: 3 ----> server sends packets 49, 50 and 51
+          client sends ack seq: 50 ws: 2 ----> server checks that it has already sent packets 50 and 51 and doesn't send any new
+                                               packets
+
+Note: In the above example, we assume the congestion window is more than 3, else the sender only sends minimum of cwnd and 
+advertized window always.
+
+Queue & Cumulative ACK's:
+-------------------------
+The queues on the server and client side are implemented as circular queue's. The initial size of these queues is read from server.in and
+client.in respectively. Everytime client receives a packet, it enqueues the packet in the queue at their expected position leaving gaps for
+lost packets, and acknowledges the last consecutive packet it received. Once the missing packets are received, it publishes a cumulative ACK
+for all the consecutive received so far.
+
+When the server receives an ACK it deques the packet from its queue and fill the queue with subsequent packets to be sent. If server receives
+a cumulative ack, it dequeues all the packets till that ack and continues sending packets based on the client window size and cwnd.
+
+Slow Start:
+----------
+When the server starts sending packets, it starts in a slow start mode where it starts with a cwnd of 1 and ssthres as half the published client window
+size. Until the cwnd reaches ssthres, cwnd is increased by 1 for each timely ack received. This lets the cwnd to grow exponentially and when the cwnd
+reaches ssthres, the cwnd is increased by 1 only when all the acks for the current cwnd size are received.
+
+The server always sends the least of the two below listed values
+        * cwnd size
+        * advertized window size by client
+
+Congestion Avoidence:
+--------------------
+When server timesout on a packet, the sender assumes that there congestion in the network and resorts to congestion avoidence mechanishm where it updates
+the ssthres value to current cwnd size/2 and cwnd to 1, hence forcing a slow start so that sender will reduce the traffice in the network and there by try
+mitigating the congestion in the network. Once the congetion in the network is cleared the cwnd will grow for each ack recevied there by gracefully increasing
+the load instead of flooding the network with packets.
+
+Fast Retransmit:
+---------------
+When the sender receives 3-acks for a packet it has transmitted, the sender concludes that the network is congested and all the packets in current window might be
+lost, so it retransmits the whole of current window again instead of waiting for timeout on each packet individually.
+
+Persisted mode and probing:
+---------------------------
+When the client publishes a window size of zero. The server switches to persisted timer mode in which it keeps probing the client for an update of window size.
+Client publishes the previous ack message everytime it receives a probe, untill it free's up some space in the queue in which case it sends a window update msg
+to server. The persistent timer makes sure that server doesn't try to retransmit and hence give up when it knows client cannot receive the data.
+
+EOF handling:
+-------------
+when the server finishes reading the file, it enqueues a special packet called EOF packet into the sender queue and waits for its ack before exiting the loop.
+The client when it receives EOF packet, it enqueues the packet into its queue, so that the consumer thread can read that packet and terminate the reading/sleeping cycle.
+Also client sends and ACK to EOF packet and hangs around for sometime in case the ACK gets lost. This is mentioned as TIME_WAIT in the stdout msgs. Once the client
+has waited out for TIME_WAIT cycle, it exits there by gracefully handling the file close.
+
+Dropping Packets & ACKS:
+-----------------------
+The client uses the probability values provided in client.in to calculate if should accept a packet received from server or drop it. It does the same with ack packets
+and makes sure the serever retransmits packets which are not ack'ed by the client.
